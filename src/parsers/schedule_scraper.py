@@ -43,8 +43,13 @@ def load_schedules() -> pd.DataFrame:
     return df
 
 
-def fetch_competitor_routes(pairs: List[Tuple[str, str]]) -> pd.DataFrame:
-    """Возвращает записи из schedules_raw.json для заданных пар (origin, dest)."""
+def fetch_competitor_routes(
+    pairs: List[Tuple[str, str]], use_cache: bool = True
+) -> pd.DataFrame:
+    """
+    Возвращает записи из schedules_raw.json для заданных пар (origin, dest).
+    use_cache сохранён для совместимости с сигнатурой из main: данные всегда читаются из кэша.
+    """
     df = load_schedules()
     wanted = set(pairs)
     mask = [(o, d) in wanted for o, d in zip(df["origin_iata"], df["dest_iata"])]

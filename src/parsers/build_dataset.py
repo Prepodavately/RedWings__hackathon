@@ -236,8 +236,9 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
             proof = (
                 f"Росстат: {a.population_mln + b.population_mln:.2f} млн чел. в 2 агломерациях "
                 f"({a.city_name} {a.population_mln:.2f} + {b.city_name} {b.population_mln:.2f}); "
-                f"прямых авиарейсов конкурентов {comp_weekly}/нед. "
-                f"Пассажиропоток: аэропорт {a.iata} = {a.airport_pax_mln:.3f} млн пасс. в 2025 г. "
+                + (f"прямых авиарейсов конкурентов {comp_weekly}/нед. " if comp_weekly is not None
+                   else "прямых авиарейсов конкурентов: не измерено. ")
+                + f"Пассажиропоток: аэропорт {a.iata} = {a.airport_pax_mln:.3f} млн пасс. в 2025 г. "
                 f"(data/raw/rosaviatsia_2025.csv) × {DEPARTURE_SHARE:.0%} вылетающих × "
                 f"{CORE_SHARE:.0%} в города набора (допущение) × гравитация на {b.iata}: "
                 f"население {b.population_mln:.3f} млн (data/raw/rosstat_cities.csv), "
@@ -292,8 +293,13 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
             })
 
     df = pd.DataFrame(rows)
+    # int64, если все пары измерены; иначе nullable Int64, чтобы не падать и не подставлять нули
     for c in ["competitor_flights_weekly", "own_flights_weekly", "competitor_fare_rub"]:
-        df[c] = df[c].astype("int64")
+        df[c] = df[c].astype("Int64")
+        if df[c].notna().all():
+            df[c] = df[c].astype("int64")
+        else:
+            warnings.warn(f"{c}: есть неизмеренные пары, оставлены пустыми (Int64)", stacklevel=2)
     df["subsidy_eligible"] = df["subsidy_eligible"].astype(bool)
     return df
 

@@ -42,8 +42,8 @@ MOSCOW_HUB = (55.7558, 37.6173)
 EARTH_RADIUS_KM = 6371.0
 
 COMPETITOR_SOURCE = (
-    "доля рейсов главного конкурента среди прямых рейсов между 12 городами ТЗ, "
-    "неделя 09–15.11.2026 (biletdv.ru, data/raw/schedules_raw.json)"
+    "доля вылетов главного перевозчика среди всех вылетов аэропорта за 10–15.11.2026 "
+    "(табло Яндекс.Расписаний, data/raw/rosaviatsia_2025.csv)"
 )
 
 
@@ -65,23 +65,6 @@ def _min_max(series: pd.Series) -> pd.Series:
     return ((series - lo) / (hi - lo) * 100.0).round(2)
 
 
-def top_competitor(sched: pd.DataFrame) -> dict:
-    """
-    Главный конкурент в аэропорту по расписанию: перевозчик (кроме Red Wings) с наибольшим числом
-    прямых рейсов из аэропорта; доля = его рейсы / все прямые рейсы из аэропорта, %.
-    При равенстве рейсов перевозчики перечисляются через «/».
-    """
-    total = sched.groupby("origin_iata")["weekly_flights"].sum()
-    comp = sched[~sched["own_operator"] & (sched["weekly_flights"] > 0)]
-    by_carrier = comp.groupby(["origin_iata", "carrier"])["weekly_flights"].sum().reset_index()
-    result = {}
-    for origin, g in by_carrier.groupby("origin_iata"):
-        best = g["weekly_flights"].max()
-        names = " / ".join(g.loc[g["weekly_flights"] == best, "carrier"])
-        result[origin] = (names, round(100.0 * best / total[origin], 1))
-    return result
-
-
 def load_rosstat_and_rosaviatsia(raw_dir: Path = RAW_DIR) -> pd.DataFrame:
     """
     12 городов-кандидатов из ТЗ.
@@ -90,11 +73,8 @@ def load_rosstat_and_rosaviatsia(raw_dir: Path = RAW_DIR) -> pd.DataFrame:
     tourism_demand_score = среднее двух шкал 0..100: средняя зарплата по субъекту (ПСП, Росстат)
         и авиаподвижность (пассажиропоток аэропорта / население агломерации).
     """
-    from src.parsers.schedule_scraper import load_schedules
-
     cities = pd.read_csv(raw_dir / ROSSTAT_FILE, dtype={"iata": str})
     airports = pd.read_csv(raw_dir / ROSAVIATSIA_FILE, dtype={"iata": str})
-    airports = airports.drop(columns=["main_competitor", "competitor_share_pct"], errors="ignore")
 
     df = cities.merge(airports, on="iata", how="left", validate="one_to_one",
                       suffixes=("_rosstat", "_rosaviatsia"))
@@ -112,9 +92,13 @@ def load_rosstat_and_rosaviatsia(raw_dir: Path = RAW_DIR) -> pd.DataFrame:
         int(round(haversine_km(AIRPORT_COORDS[c], MOSCOW_HUB))) for c in df["iata"]
     ]
 
-    top = top_competitor(load_schedules())
-    df["competitor_share_pct"] = df["iata"].map(lambda c: top[c][1])
-    df["main_competitor"] = df["iata"].map(lambda c: f"{top[c][0]} ({top[c][1]:.0f}%)")
+    missing = df.loc[df["main_competitor"].isna() | df["competitor_share_pct"].isna(), "iata"].tolist()
+    if missing:
+        raise ValueError(f"Нет main_competitor/competitor_share_pct в {ROSAVIATSIA_FILE}: {missing}")
+    df["competitor_share_pct"] = df["competitor_share_pct"].astype(float)
+    df["main_competitor"] = [
+        f"{name} ({share:.0f}%)" for name, share in zip(df["main_competitor"], df["competitor_share_pct"])
+    ]
     df["competitor_gap_score"] = (100.0 - df["competitor_share_pct"]).round(2)
     df["competitor_share_source"] = COMPETITOR_SOURCE
 
