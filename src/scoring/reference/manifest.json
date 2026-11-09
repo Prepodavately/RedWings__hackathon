@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/Prepodavately/RedWings__hackathon",
+  "branch": "feat/data-parsers",
+  "commit": "e364ac7d9ee8307d08bcb2bf64f670ad93658889",
+  "source_path": "data/processed/cities_features.parquet",
+  "source_sha256": "26cf156236994ca8ac2496f997e6c5982a46e7389a4eacf5c02221e86be0f523",
+  "csv_sha256": "621e387cf9faaf38c272844af49c2c899ddf5264fb3581500f40ad5e77f9a8a2",
+  "note": "Снимок данных Dev 1 для воспроизводимости. Источники поставщика не проверены независимо. Перевод из Parquet в CSV без изменения значений; недостающие критерии не добавлены."
+}
