@@ -1,16 +1,16 @@
 """
-Пайплайн сборки финальных витрин data/processed/*.parquet.
+Пайплайн сборки витрин data/processed/*.parquet по ТЗ Dev 1.
 ВЛАДЕЛЕЦ ФАЙЛА: Dev 1 (Data & Parsing)
 
 Выход:
-  data/processed/cities_features.parquet — города-кандидаты (Росстат + Росавиация)
-  data/processed/routes_proof.parquet    — направления А → Б с пассажиропотоком, частотой
-                                           и колонкой proof_source (+ копия routes_proof.csv)
+  data/processed/cities_features.parquet — 12 городов ТЗ (см. rosstat_loader.py)
+  data/processed/routes_proof.parquet    — все пары А→Б с расчётами и proof_source (+ .csv)
+
+get_network_routes(hypothesis, hub_iata) возвращает 10–12 маршрутов с колонками из ТЗ.
 
 Запуск: make parse  (python -m src.parsers.build_dataset)
 
-Все числа, которых нет в data/raw/, вынесены в блок ДОПУЩЕНИЯ и попадают в proof_source
-каждого маршрута. Это оценка по модели, а не измеренный пассажиропоток.
+Допущения вынесены в блок ДОПУЩЕНИЯ и указаны в proof_source каждого маршрута.
 """
 
 from __future__ import annotations
@@ -21,8 +21,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.parsers.rosstat_loader import load_rosstat_and_rosaviatsia
-from src.parsers.schedule_scraper import load_competitor_schedules
+from src.parsers.rosstat_loader import (
+    MOSCOW_HUB,
+    TZ_CITIES,
+    AIRPORT_COORDS,
+    haversine_km,
+    load_rosstat_and_rosaviatsia,
+)
+from src.parsers.schedule_scraper import load_schedules
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
@@ -30,83 +36,39 @@ CITIES_PATH = PROCESSED_DIR / "cities_features.parquet"
 ROUTES_PATH = PROCESSED_DIR / "routes_proof.parquet"
 
 HYPOTHESES = ("hub", "p2p")
+MAX_ROUTES = 12                # ТЗ: 10–12 маршрутов
+MIN_ROUTES = 10                # ТЗ: минимум 10
 
-# Координаты аэропортов (IATA). KUF, GOJ, UFA — из repoArchitecture.ts, PEE — из старого стаба;
-# остальные — справочные значения, проверить по OurAirports/Википедии.
-AIRPORT_COORDS = {
-    # Проверены по Википедии (ru), градусы-минуты-секунды переведены в десятичные:
-    "SVX": (56.741, 60.804),  # Кольцово
-    "KRR": (45.034, 39.150),  # Пашковский
-    "KJA": (56.186, 92.475),  # Емельяново
-    "OMS": (54.967, 73.317),  # Омск-Центральный
-    "CEK": (55.305, 61.505),  # Челябинск (Курчатов)
-    "VOG": (48.787, 44.350),  # Гумрак
-    # Не проверены на этом шаге (значения из справочника/репозитория, сверить):
-    "KUF": (53.50, 50.15),
-    "GOJ": (56.23, 43.78),
-    "UFA": (54.55, 55.87),
-    "KZN": (55.61, 49.28),
-    "OVB": (55.01, 82.65),
-    "PEE": (57.91, 56.02),
-}
-MAX_ROUTES = 12                # config/settings.yaml: network.max_routes
-
-# ---- ДОПУЩЕНИЯ МОДЕЛИ (не из источников; менять здесь и пересчитывать) ----
-SEATS_PER_AIRCRAFT = 100       # config/settings.yaml: fleet.default_seats
+# ---- ДОПУЩЕНИЯ (не из источников; менять здесь и пересчитывать) ----
+SEATS_PER_AIRCRAFT = 100       # config/settings.yaml: fleet.default_seats (SJ-100)
 LOAD_FACTOR = 0.84             # FinModelInput.load_factor_pct по умолчанию
 DEPARTURE_SHARE = 0.50         # доля пассажиров аэропорта, вылетающих из него
-CORE_SHARE = 0.10              # доля вылетающих, летящих в города этого набора
+CORE_SHARE = 0.10              # доля вылетающих, летящих в города набора
 DISTANCE_EXPONENT = 1.0        # гравитация: спрос ∝ население_B / расстояние_AB^γ
 RW_CAPTURE_BASE = 0.20         # доля рынка пары, которую забирает Red Wings (базовый сценарий)
-MIN_ROUTES = 8                 # config/settings.yaml: network.min_routes
+BLOCK_SPEED_KMH = 650.0        # средняя блочная скорость SJ-100 (допущение)
+TAXI_OVERHEAD_MIN = 20         # рулёжка, взлёт, заход на посадку (допущение)
 WEEKS_PER_YEAR = 52
-EARTH_RADIUS_KM = 6371.0
+FARE_FALLBACK = "медиана тарифов конкурентов по всем парам (нет тарифа на этой паре)"
 
-
-def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
-    lat1, lon1 = map(math.radians, a)
-    lat2, lon2 = map(math.radians, b)
-    h = (
-        math.sin((lat2 - lat1) / 2) ** 2
-        + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
-    )
-    return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(h))
+# Субсидируемые маршруты из Екатеринбурга на 2026 (Росавиация; 30 рейсов из Кольцово).
+# Полный федеральный перечень (305 направлений) не получен: для остальных пар статус не проверен.
+SUBSIDY_SOURCE = "Росавиация, перечень 2026 (Сигнал Урал, 26.11.2025): https://signalural.ru/news/10457"
+SUBSIDY_2026_FROM_SVX = {"GOJ", "OMS", "VOG", "GSV"}  # из 12 городов ТЗ
 
 
 def build_cities_features() -> pd.DataFrame:
-    """Таблица городов-кандидатов с источниками по каждой группе данных."""
-    df = load_rosstat_and_rosaviatsia()
-
-    no_coords = sorted(set(df["iata"]) - set(AIRPORT_COORDS))
-    if no_coords:
-        raise ValueError(f"Нет координат аэропортов в AIRPORT_COORDS: {no_coords}")
-
-    return pd.DataFrame(
-        {
-            "iata": df["iata"],
-            "city_name": df["city_name"],
-            "region": df["region"],
-            "population_mln": df["population_mln"],
-            "airport_pax_mln": df["airport_pax_2025_mln"],
-            "main_competitor": df["main_competitor"],
-            "competitor_share_pct": df["competitor_share_pct"],
-            "lat": df["iata"].map(lambda c: AIRPORT_COORDS[c][0]),
-            "lon": df["iata"].map(lambda c: AIRPORT_COORDS[c][1]),
-            "src_population": df["src_population"],
-            "src_airport_pax": df["src_airport_pax"],
-        }
-    )
+    return load_rosstat_and_rosaviatsia()
 
 
-def _load_competitor_flights() -> dict[tuple[str, str], dict]:
+def _pair_competitor_info() -> dict[tuple[str, str], dict]:
     """
-    Прямые рейсы конкурентов на парах из data/raw/competitor_schedules.csv.
-    Собственные рейсы Red Wings (own_operator=true) не считаются конкурентами.
-    Пары, которых нет в файле, в словарь не попадают: их частота «не измерено».
+    По каждой паре: рейсы конкурентов (без Red Wings), рейсы Red Wings, тарифы.
+    Пары, которых нет в schedules_raw.json, в результат не попадают.
     """
-    df = load_competitor_schedules()
-    result: dict[tuple[str, str], dict] = {}
-    for (origin, dest), g in df.groupby(["origin", "dest"]):
+    df = load_schedules()
+    info: dict[tuple[str, str], dict] = {}
+    for (origin, dest), g in df.groupby(["origin_iata", "dest_iata"]):
         comp = g[~g["own_operator"]]
         own = g[g["own_operator"]]
         carriers = []
@@ -117,103 +79,153 @@ def _load_competitor_flights() -> dict[tuple[str, str], dict]:
             if pd.notna(r.min_fare_rub):
                 text += f", от {int(r.min_fare_rub)} ₽"
             carriers.append(text)
-        result[(origin, dest)] = {
+        fares = [float(x) for x in comp["min_fare_rub"].dropna()]
+        info[(origin, dest)] = {
             "competitor_weekly": int(comp["weekly_flights"].sum()),
             "own_weekly": int(own["weekly_flights"].sum()),
             "carriers": "; ".join(carriers) if carriers else "прямых рейсов не найдено",
+            "fares": fares,
             "sources": ", ".join(sorted(set(g["source"]))),
         }
-    return result
+    return info
+
+
+def _launch_quarter(own_weekly: int, competitor_weekly: int) -> str:
+    """Предложение по срокам запуска (правило, не прогноз):
+    уже летает Red Wings → Q3 2026; есть конкуренты → Q2 2027; конкурентов нет → Q1 2028."""
+    if own_weekly > 0:
+        return "Q3 2026"
+    if competitor_weekly > 0:
+        return "Q2 2027"
+    return "Q1 2028"
 
 
 def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
     """
-    Все направления А → Б между городами набора.
+    Все пары А→Б между 12 городами ТЗ.
 
     Пассажиропоток (пар А→Б, в год, в одну сторону):
         рынок_AB = пасс_аэропорта_A × DEPARTURE_SHARE × CORE_SHARE × доля_B
         доля_B   = (население_B / расстояние_AB^γ) / Σ_j (население_j / расстояние_Aj^γ)
-    Red Wings: pax = рынок_AB × RW_CAPTURE_BASE.
-    Частота: freq = ceil(pax / 52 / (SEATS × LOAD_FACTOR)), минимум 1 рейс в неделю.
+    Red Wings: pax = рынок_AB × RW_CAPTURE_BASE; freq = ceil(pax / 52 / (SEATS × LF)), минимум 1.
     """
-    competitor_flights = _load_competitor_flights()
-    rows: list[dict] = []
+    info = _pair_competitor_info()
+    all_fares = [f for v in info.values() for f in v["fares"]]
+    fare_fallback = float(pd.Series(all_fares).median()) if all_fares else float("nan")
 
+    rows: list[dict] = []
     for a in cities.itertuples(index=False):
         others = [b for b in cities.itertuples(index=False) if b.iata != a.iata]
-        distance = {
-            b.iata: _haversine_km((a.lat, a.lon), (b.lat, b.lon)) for b in others
-        }
-        gravity = {
-            b.iata: b.population_mln / distance[b.iata] ** DISTANCE_EXPONENT for b in others
-        }
+        dist = {b.iata: haversine_km((a.lat, a.lon), (b.lat, b.lon)) for b in others}
+        gravity = {b.iata: b.population_mln / dist[b.iata] ** DISTANCE_EXPONENT for b in others}
         gravity_total = sum(gravity.values())
-        departing_core_pool = a.airport_pax_mln * 1e6 * DEPARTURE_SHARE * CORE_SHARE
+        pool = a.airport_pax_mln * 1e6 * DEPARTURE_SHARE * CORE_SHARE
 
         for b in others:
-            dest_share = gravity[b.iata] / gravity_total
-            market_pax = departing_core_pool * dest_share
-            pax = market_pax * RW_CAPTURE_BASE
+            share = gravity[b.iata] / gravity_total
+            market = pool * share
+            pax = market * RW_CAPTURE_BASE
             freq = max(1, math.ceil(pax / WEEKS_PER_YEAR / (SEATS_PER_AIRCRAFT * LOAD_FACTOR)))
+            d_km = dist[b.iata]
+            flight_min = round(d_km / BLOCK_SPEED_KMH * 60 + TAXI_OVERHEAD_MIN)
+            detour = (
+                haversine_km((a.lat, a.lon), MOSCOW_HUB) + haversine_km(MOSCOW_HUB, (b.lat, b.lon))
+            ) / d_km
 
-            comp_key = (a.iata, b.iata)
-            if comp_key in competitor_flights:
-                info = competitor_flights[comp_key]
-                comp_flights = info["competitor_weekly"]
-                comp_text = (
-                    f"Конкуренты на паре: {comp_flights} прямых рейс(ов)/нед ({info['carriers']}) "
-                    f"по {info['sources']} (неделя 09–15.11.2026)."
-                )
-                if info["own_weekly"]:
-                    comp_text += f" Red Wings уже выполняет {info['own_weekly']} рейс(ов)/нед на этой паре."
+            pi = info.get((a.iata, b.iata))
+            if pi is None:
+                comp_weekly = None
+                own_weekly = None
+                carriers = "НЕ ИЗМЕРЕНО"
+                fare = None
+                fare_src = "нет данных"
+                proof_comp = "Конкуренты на паре: НЕ ИЗМЕРЕНО (пары нет в schedules_raw.json)."
             else:
-                comp_flights = None
-                comp_text = "Конкуренты на паре: НЕ ИЗМЕРЕНО (пары нет в competitor_schedules.csv)."
-            if pd.notna(a.competitor_share_pct):
-                comp_text += (
-                    f" Доля конкурентов в аэропорту {a.iata}: {a.competitor_share_pct:.0f}% "
-                    f"({a.main_competitor}, data/raw/rosaviatsia_2025.csv)."
+                comp_weekly = pi["competitor_weekly"]
+                own_weekly = pi["own_weekly"]
+                carriers = pi["carriers"]
+                if pi["fares"]:
+                    fare = sum(pi["fares"]) / len(pi["fares"])
+                    fare_src = "среднее min-тарифов конкурентов на паре (" + pi["sources"] + ")"
+                else:
+                    fare = fare_fallback
+                    fare_src = FARE_FALLBACK
+                proof_comp = (
+                    f"Конкуренты на паре: {comp_weekly} прямых рейс(ов)/нед ({carriers}) "
+                    f"по {pi['sources']} (неделя 09–15.11.2026)."
                 )
-            else:
-                comp_text += f" Доля конкурентов в аэропорту {a.iata} не найдена в открытых источниках."
+                if own_weekly:
+                    proof_comp += f" Red Wings уже выполняет {own_weekly} рейс(ов)/нед на этой паре."
 
             proof = (
-                f"Пассажиропоток: аэропорт {a.iata} = {a.airport_pax_mln:.2f} млн пасс. в 2025 г. "
+                f"Пассажиропоток: аэропорт {a.iata} = {a.airport_pax_mln:.3f} млн пасс. в 2025 г. "
                 f"(data/raw/rosaviatsia_2025.csv) × {DEPARTURE_SHARE:.0%} вылетающих × "
                 f"{CORE_SHARE:.0%} в города набора (допущение) × гравитация на {b.iata}: "
-                f"население {b.population_mln:.2f} млн (data/raw/rosstat_cities.csv), "
-                f"расстояние {distance[b.iata]:.0f} км; доля {dest_share:.1%} → рынок "
-                f"{market_pax:,.0f} пасс./год. Red Wings берёт {RW_CAPTURE_BASE:.0%} (допущение) "
-                f"= {pax:,.0f} пасс./год. Частота: {pax / WEEKS_PER_YEAR:,.0f} пасс./нед ÷ "
-                f"({SEATS_PER_AIRCRAFT} мест × {LOAD_FACTOR:.0%}) → {freq} рейс(ов)/нед. "
-                f"{comp_text}"
+                f"население {b.population_mln:.3f} млн (data/raw/rosstat_cities.csv), "
+                f"расстояние {d_km:.0f} км; доля {share:.1%} → рынок {market:,.0f} пасс./год. "
+                f"Red Wings берёт {RW_CAPTURE_BASE:.0%} (допущение) = {pax:,.0f} пасс./год. "
+                f"Частота: {pax / WEEKS_PER_YEAR:,.0f} пасс./нед ÷ ({SEATS_PER_AIRCRAFT} мест × "
+                f"{LOAD_FACTOR:.0%}) → {freq} рейс(ов)/нед. "
+                f"{proof_comp} "
+                f"Доля конкурентов в аэропорту {a.iata}: "
+                + (
+                    f"{a.competitor_share_pct:.0f}% ({a.main_competitor}, data/raw/rosaviatsia_2025.csv)."
+                    if pd.notna(a.competitor_share_pct)
+                    else "не найдена в открытых источниках."
+                )
             )
 
-            rows.append(
-                {
-                    "origin": a.iata,
-                    "dest": b.iata,
-                    "origin_city": a.city_name,
-                    "dest_city": b.city_name,
-                    "lat_o": a.lat,
-                    "lon_o": a.lon,
-                    "lat_d": b.lat,
-                    "lon_d": b.lon,
-                    "distance_km": round(distance[b.iata], 1),
-                    "market_pax_year": round(market_pax),
-                    "pax": round(pax),
-                    "freq": freq,
-                    "competitor_share_origin_pct": a.competitor_share_pct,
-                    "competitor_flights_weekly": comp_flights,
-                    "proof_source": proof,
-                }
-            )
+            if "SVX" in (a.iata, b.iata):
+                other = b.iata if a.iata == "SVX" else a.iata
+                if other in SUBSIDY_2026_FROM_SVX:
+                    sub_flag = True
+                    sub_check = (f"да: маршрут из Екатеринбурга в перечне 2026 ({SUBSIDY_SOURCE}); "
+                                 f"обратное направление — допущение")
+                else:
+                    sub_flag = False
+                    sub_check = f"нет в перечне 2026 для Екатеринбурга ({SUBSIDY_SOURCE})"
+            else:
+                sub_flag = False
+                sub_check = ("не проверено: полный перечень 2026 (305 направлений) не получен; "
+                             "известен только список маршрутов из Екатеринбурга")
 
-    return pd.DataFrame(rows)
+            rows.append({
+                "origin_iata": a.iata,
+                "origin_city": a.city_name,
+                "dest_iata": b.iata,
+                "dest_city": b.city_name,
+                "lat_o": a.lat,
+                "lon_o": a.lon,
+                "lat_d": b.lat,
+                "lon_d": b.lon,
+                "distance_km": int(round(d_km)),
+                "flight_time_min": int(flight_min),
+                "competitor_flights_weekly": comp_weekly,
+                "own_flights_weekly": own_weekly,
+                "competitor_carriers": carriers,
+                "competitor_fare_rub": None if fare is None or pd.isna(fare) else int(round(fare)),
+                "fare_source": fare_src,
+                "subsidy_eligible": sub_flag,
+                "subsidy_check": sub_check,
+                "launch_quarter": _launch_quarter(own_weekly or 0, comp_weekly or 0),
+                "moscow_detour_ratio": round(detour, 2),
+                "market_pax_year": int(round(market)),
+                "pax": int(round(pax)),
+                "freq": int(freq),
+                "competitor_share_origin_pct": a.competitor_share_pct,
+                "proof_source": proof,
+            })
+
+    df = pd.DataFrame(rows)
+    int_cols = ["competitor_flights_weekly", "own_flights_weekly", "competitor_fare_rub"]
+    for c in int_cols:
+        df[c] = df[c].astype("Int64")
+    df["subsidy_eligible"] = df["subsidy_eligible"].astype(bool)
+    return df
 
 
 def build_processed_tables() -> None:
-    """Собирает cities_features.parquet и routes_proof.parquet (+ routes_proof.csv) в data/processed/."""
+    """Собирает cities_features.parquet и routes_proof.parquet (+ routes_proof.csv)."""
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
     cities = build_cities_features()
@@ -229,12 +241,10 @@ def build_processed_tables() -> None:
 
 def get_network_routes(hypothesis: str, hub_iata: str = "KUF") -> pd.DataFrame:
     """
-    Маршруты из data/processed/routes_proof.parquet для гипотезы.
+    Маршруты гипотезы для Dev 2–4 (колонки по ТЗ, 10–12 строк, отсортированы по pax).
 
-    hypothesis="p2p": направления между городами набора (прямые региональные рейсы).
-    hypothesis="hub": направления с хабом hub_iata (в обе стороны).
-    Оба варианта обрезаются до MAX_ROUTES лучших по пассажиропотоку.
-    В каждой строке есть proof_source: откуда взят пассажиропоток и частота конкурентов.
+    hypothesis="p2p": направления между городами ТЗ (прямые региональные рейсы).
+    hypothesis="hub": направления с хабом hub_iata в обе стороны.
     """
     if hypothesis not in HYPOTHESES:
         raise ValueError(f"hypothesis должен быть одним из {HYPOTHESES}, получено {hypothesis!r}")
@@ -244,19 +254,22 @@ def get_network_routes(hypothesis: str, hub_iata: str = "KUF") -> pd.DataFrame:
     routes = pd.read_parquet(ROUTES_PATH)
 
     if hypothesis == "hub":
-        if hub_iata not in set(routes["origin"]):
-            raise ValueError(f"Хаб {hub_iata} отсутствует в данных: {sorted(set(routes['origin']))}")
-        routes = routes[(routes["origin"] == hub_iata) | (routes["dest"] == hub_iata)]
+        if hub_iata not in TZ_CITIES:
+            raise ValueError(f"Хаб {hub_iata} не входит в 12 городов ТЗ: {TZ_CITIES}")
+        routes = routes[(routes["origin_iata"] == hub_iata) | (routes["dest_iata"] == hub_iata)]
 
     routes = routes.sort_values("pax", ascending=False).head(MAX_ROUTES).reset_index(drop=True)
 
+    tag = "HUB" if hypothesis == "hub" else "P2P"
+    routes.insert(0, "route_code", [
+        f"RW-{tag}-{o}-{d}" for o, d in zip(routes["origin_iata"], routes["dest_iata"])
+    ])
+
     if len(routes) < MIN_ROUTES:
         warnings.warn(
-            f"Гипотеза {hypothesis!r}: {len(routes)} маршрутов, минимум {MIN_ROUTES}. "
-            f"Нужно больше городов в data/raw/rosstat_cities.csv и rosaviatsia_2025.csv.",
+            f"Гипотеза {hypothesis!r}: {len(routes)} маршрутов, минимум {MIN_ROUTES} по ТЗ.",
             stacklevel=2,
         )
-
     return routes
 
 

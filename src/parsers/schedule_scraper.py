@@ -1,11 +1,14 @@
 """
-Конкуренты: прямые рейсы и частоты на парах городов.
+Конкуренты: прямые рейсы и тарифы на парах городов.
 ВЛАДЕЛЕЦ ФАЙЛА: Dev 1 (Data & Parsing)
 
-Источник — курируемый файл data/raw/competitor_schedules.csv. Каждая строка —
-перевозчик на паре А→Б за неделю, с колонкой source (URL страницы расписания).
+Источник — data/raw/schedules_raw.json: список записей, по одной на перевозчика
+на паре А→Б за неделю. Поля записи:
+  origin_iata, dest_iata, carrier, weekly_flights (int), own_operator (bool — рейсы
+  самой Red Wings), week, source (URL страницы расписания), note, min_fare_rub (int или null).
+
 Автоматического парсинга здесь нет: прежний парсер возвращал нули и захардкоженный
-источник, поэтому удалён. Пары без строк считаются «не измерено».
+источник, поэтому удалён. Пары без записей считаются «не измерено».
 """
 
 from typing import List, Tuple
@@ -14,26 +17,35 @@ import pandas as pd
 
 from src.parsers.rosstat_loader import RAW_DIR
 
-COMPETITOR_FILE = RAW_DIR / "competitor_schedules.csv"
-REQUIRED_COLUMNS = {"origin", "dest", "carrier", "weekly_flights", "own_operator", "week", "source", "note"}
+SCHEDULES_FILE = RAW_DIR / "schedules_raw.json"
+REQUIRED_KEYS = {
+    "origin_iata", "dest_iata", "carrier", "weekly_flights", "own_operator",
+    "week", "source", "note", "min_fare_rub",
+}
 
 
-def load_competitor_schedules() -> pd.DataFrame:
-    """Читает курируемую таблицу рейсов конкурентов и проверяет колонки."""
-    df = pd.read_csv(COMPETITOR_FILE, dtype={"origin": str, "dest": str})
-    missing = REQUIRED_COLUMNS - set(df.columns)
-    if missing:
-        raise ValueError(f"В {COMPETITOR_FILE.name} нет колонок: {sorted(missing)}")
-    if "min_fare_rub" not in df.columns:
-        df["min_fare_rub"] = float("nan")
+def load_schedules() -> pd.DataFrame:
+    """Читает schedules_raw.json и проверяет структуру записей."""
+    import json
+
+    records = json.loads(SCHEDULES_FILE.read_text(encoding="utf-8"))
+    if not records:
+        raise ValueError(f"{SCHEDULES_FILE.name} пуст: нет данных о рейсах конкурентов")
+    bad = [r for r in records if not REQUIRED_KEYS <= set(r)]
+    if bad:
+        raise ValueError(f"В {SCHEDULES_FILE.name} у записей нет полей: {sorted(REQUIRED_KEYS)}")
+    df = pd.DataFrame(records)
+    df["origin_iata"] = df["origin_iata"].astype(str)
+    df["dest_iata"] = df["dest_iata"].astype(str)
     df["weekly_flights"] = df["weekly_flights"].astype(int)
     df["own_operator"] = df["own_operator"].astype(bool)
+    df["min_fare_rub"] = pd.to_numeric(df["min_fare_rub"], errors="coerce")
     return df
 
 
 def fetch_competitor_routes(pairs: List[Tuple[str, str]]) -> pd.DataFrame:
-    """Возвращает строки курируемой таблицы для заданных пар (origin, dest)."""
-    df = load_competitor_schedules()
+    """Возвращает записи из schedules_raw.json для заданных пар (origin, dest)."""
+    df = load_schedules()
     wanted = set(pairs)
-    mask = [(o, d) in wanted for o, d in zip(df["origin"], df["dest"])]
+    mask = [(o, d) in wanted for o, d in zip(df["origin_iata"], df["dest_iata"])]
     return df[mask].reset_index(drop=True)
