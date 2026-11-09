@@ -1,0 +1,52 @@
+{
+  "mode": "exploratory",
+  "hypothesis": "p2p",
+  "input_file": "dev1_e364ac7.csv",
+  "input_sha256": "621e387cf9faaf38c272844af49c2c899ddf5264fb3581500f40ad5e77f9a8a2",
+  "created_at_utc": "2026-11-09T17:05:55.011884+00:00",
+  "requested_weights": {
+    "w_population": 0.3,
+    "w_hub_distance": 0.2,
+    "w_competitor_gap": 0.3,
+    "w_tourism_demand": 0.2
+  },
+  "effective_weights": {
+    "population": 0.3,
+    "hub_distance": 0.2,
+    "competitor_gap": 0.3,
+    "tourism_demand": 0.2
+  },
+  "normalization_bounds": {
+    "population": [
+      0.648282,
+      2.096344
+    ],
+    "hub_distance": [
+      0.0,
+      1339.0
+    ],
+    "competitor_gap": [
+      0.0,
+      100.0
+    ],
+    "tourism_demand": [
+      0.0,
+      100.0
+    ]
+  },
+  "sensitivity": {
+    "samples": 2000,
+    "seed": 42,
+    "relative_change": 0.2,
+    "scope": "weights_only"
+  },
+  "limitations": [
+    "Веса — экспертное предположение; результат условен относительно данных и критериев.",
+    "Рейтинг городов не доказывает спрос, прибыльность маршрутов или победу гипотезы.",
+    "Источники записаны поставщиком данных; наличие ссылки не означает внешнюю проверку.",
+    "ПРЕДВАРИТЕЛЬНО: доля пассажиров с пересадкой в Москве не участвует в формуле.",
+    "Происхождение, сопоставимость периодов и возможности аэропортов требуют проверки.",
+    "tourism_demand_score и competitor_gap_score используются в определении Dev 1; проверьте прокси."
+  ],
+  "cutoff_tie": false
+}
