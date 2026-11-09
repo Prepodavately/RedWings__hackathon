@@ -24,7 +24,7 @@ def load_rosstat_and_rosaviatsia(raw_dir: Path = RAW_DIR) -> pd.DataFrame:
     cities = pd.read_csv(raw_dir / ROSSTAT_FILE, dtype={"iata": str})
     airports = pd.read_csv(raw_dir / ROSAVIATSIA_FILE, dtype={"iata": str})
 
-    cities["src_population"] = f"data/raw/{ROSSTAT_FILE} (Росстат, население агломерации)"
+    cities["src_population"] = f"data/raw/{ROSSTAT_FILE} (население города, колонка source)"
     airports["src_airport_pax"] = (
         f"data/raw/{ROSAVIATSIA_FILE} (Росавиация, пассажиропоток аэропорта 2025)"
     )

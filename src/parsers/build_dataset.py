@@ -15,38 +15,39 @@
 
 from __future__ import annotations
 
-import json
 import math
 import warnings
 from pathlib import Path
 
 import pandas as pd
 
-from src.parsers.rosstat_loader import RAW_DIR, load_rosstat_and_rosaviatsia
+from src.parsers.rosstat_loader import load_rosstat_and_rosaviatsia
+from src.parsers.schedule_scraper import load_competitor_schedules
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 CITIES_PATH = PROCESSED_DIR / "cities_features.parquet"
 ROUTES_PATH = PROCESSED_DIR / "routes_proof.parquet"
-SCHEDULES_CACHE = RAW_DIR / "schedules_raw.json"
 
 HYPOTHESES = ("hub", "p2p")
 
 # Координаты аэропортов (IATA). KUF, GOJ, UFA — из repoArchitecture.ts, PEE — из старого стаба;
 # остальные — справочные значения, проверить по OurAirports/Википедии.
 AIRPORT_COORDS = {
+    # Проверены по Википедии (ru), градусы-минуты-секунды переведены в десятичные:
+    "SVX": (56.741, 60.804),  # Кольцово
+    "KRR": (45.034, 39.150),  # Пашковский
+    "KJA": (56.186, 92.475),  # Емельяново
+    "OMS": (54.967, 73.317),  # Омск-Центральный
+    "CEK": (55.305, 61.505),  # Челябинск (Курчатов)
+    "VOG": (48.787, 44.350),  # Гумрак
+    # Не проверены на этом шаге (значения из справочника/репозитория, сверить):
     "KUF": (53.50, 50.15),
     "GOJ": (56.23, 43.78),
     "UFA": (54.55, 55.87),
     "KZN": (55.61, 49.28),
-    "SVX": (56.74, 60.80),
-    "KRR": (45.03, 39.17),
-    "KJA": (56.17, 92.49),
     "OVB": (55.01, 82.65),
-    "OMS": (54.97, 73.31),
     "PEE": (57.91, 56.02),
-    "CEK": (55.31, 61.51),
-    "VOG": (48.78, 44.35),
 }
 MAX_ROUTES = 12                # config/settings.yaml: network.max_routes
 
@@ -85,7 +86,7 @@ def build_cities_features() -> pd.DataFrame:
             "iata": df["iata"],
             "city_name": df["city_name"],
             "region": df["region"],
-            "population_mln": df["agglomeration_pop_mln"],
+            "population_mln": df["population_mln"],
             "airport_pax_mln": df["airport_pax_2025_mln"],
             "main_competitor": df["main_competitor"],
             "competitor_share_pct": df["competitor_share_pct"],
@@ -97,22 +98,32 @@ def build_cities_features() -> pd.DataFrame:
     )
 
 
-def _load_competitor_flights() -> dict[tuple[str, str], int]:
+def _load_competitor_flights() -> dict[tuple[str, str], dict]:
     """
-    Частоты прямых рейсов конкурентов из кэша парсера (data/raw/schedules_raw.json).
-    Если кэша нет или он пуст — возвращает пустой словарь, значения не подставляются.
+    Прямые рейсы конкурентов на парах из data/raw/competitor_schedules.csv.
+    Собственные рейсы Red Wings (own_operator=true) не считаются конкурентами.
+    Пары, которых нет в файле, в словарь не попадают: их частота «не измерено».
     """
-    if not SCHEDULES_CACHE.exists():
-        return {}
-    try:
-        records = json.loads(SCHEDULES_CACHE.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return {
-        (r["origin_iata"], r["dest_iata"]): int(r["direct_competitor_flights_weekly"])
-        for r in records
-        if "direct_competitor_flights_weekly" in r
-    }
+    df = load_competitor_schedules()
+    result: dict[tuple[str, str], dict] = {}
+    for (origin, dest), g in df.groupby(["origin", "dest"]):
+        comp = g[~g["own_operator"]]
+        own = g[g["own_operator"]]
+        carriers = []
+        for r in comp.itertuples():
+            if r.weekly_flights <= 0:
+                continue
+            text = f"{r.carrier} {r.weekly_flights}/нед"
+            if pd.notna(r.min_fare_rub):
+                text += f", от {int(r.min_fare_rub)} ₽"
+            carriers.append(text)
+        result[(origin, dest)] = {
+            "competitor_weekly": int(comp["weekly_flights"].sum()),
+            "own_weekly": int(own["weekly_flights"].sum()),
+            "carriers": "; ".join(carriers) if carriers else "прямых рейсов не найдено",
+            "sources": ", ".join(sorted(set(g["source"]))),
+        }
+    return result
 
 
 def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
@@ -147,26 +158,24 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
 
             comp_key = (a.iata, b.iata)
             if comp_key in competitor_flights:
-                comp_flights = competitor_flights[comp_key]
+                info = competitor_flights[comp_key]
+                comp_flights = info["competitor_weekly"]
                 comp_text = (
-                    f"Конкуренты: {comp_flights} рейс(ов)/нед на паре по "
-                    f"data/raw/schedules_raw.json."
+                    f"Конкуренты на паре: {comp_flights} прямых рейс(ов)/нед ({info['carriers']}) "
+                    f"по {info['sources']} (неделя 09–15.11.2026)."
                 )
+                if info["own_weekly"]:
+                    comp_text += f" Red Wings уже выполняет {info['own_weekly']} рейс(ов)/нед на этой паре."
             else:
                 comp_flights = None
-                if pd.notna(a.competitor_share_pct):
-                    airport_comp = (
-                        f"В аэропорту {a.iata} доля конкурентов {a.competitor_share_pct:.0f}% "
-                        f"({a.main_competitor}, data/raw/rosaviatsia_2025.csv)."
-                    )
-                else:
-                    airport_comp = (
-                        f"Доля конкурентов в аэропорту {a.iata} не найдена в открытых источниках."
-                    )
-                comp_text = (
-                    f"Конкуренты на паре: НЕ ИЗМЕРЕНО (data/raw/schedules_raw.json пуст). "
-                    f"{airport_comp}"
+                comp_text = "Конкуренты на паре: НЕ ИЗМЕРЕНО (пары нет в competitor_schedules.csv)."
+            if pd.notna(a.competitor_share_pct):
+                comp_text += (
+                    f" Доля конкурентов в аэропорту {a.iata}: {a.competitor_share_pct:.0f}% "
+                    f"({a.main_competitor}, data/raw/rosaviatsia_2025.csv)."
                 )
+            else:
+                comp_text += f" Доля конкурентов в аэропорту {a.iata} не найдена в открытых источниках."
 
             proof = (
                 f"Пассажиропоток: аэропорт {a.iata} = {a.airport_pax_mln:.2f} млн пасс. в 2025 г. "

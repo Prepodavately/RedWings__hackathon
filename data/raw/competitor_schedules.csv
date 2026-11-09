@@ -1,0 +1,35 @@
+origin,dest,carrier,weekly_flights,own_operator,week,source,note,min_fare_rub
+SVX,CEK,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-chelyabinsk.htm,на странице нет рейсов; другие агрегаторы противоречат (Aviasales устарел),
+KZN,KUF,ЮВТ Аэро,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-samara.htm,пн и пт,1648
+KZN,KUF,Utair,1,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-samara.htm,вт,4583
+KUF,KZN,ЮВТ Аэро,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-kazan.htm,пн и пт,1648
+OVB,KJA,NordStar,1,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/novosibirsk-krasnoyarsk.htm,пн; S7 ежедневно по другим источникам не подтверждено,35099
+KJA,OVB,NordStar,1,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnoyarsk-novosibirsk.htm,пн,35099
+OVB,OMS,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/novosibirsk-omsk.htm,единственный рейс ЮВТ Аэро сб с 1 посадкой - не прямой,
+SVX,UFA,Utair,14,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-ufa.htm,ежедневно 2 рейса,5725
+SVX,UFA,Red Wings,4,true,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-ufa.htm,собственный рейс; вт/чт/пт/вс,4256
+UFA,KUF,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/ufa-samara.htm,на странице нет рейсов,
+OVB,KUF,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/novosibirsk-samara.htm,на странице нет рейсов,
+SVX,KUF,Utair,6,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-samara.htm,пн вт ср пт сб вс,5725
+SVX,KUF,NordStar,6,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-samara.htm,пн-сб,
+SVX,KUF,Red Wings,6,true,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-samara.htm,собственный рейс пн-сб,6125
+KZN,GOJ,ЮВТ Аэро,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-nizhny-novgorod.htm,чт и вс,4338
+SVX,PEE,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-perm.htm,на странице нет рейсов,
+KUF,UFA,ИрАэро,1,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-ufa.htm,воскресенье,3358
+KUF,GOJ,Red Wings,2,true,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-nizhny-novgorod.htm,пн пт,12872
+KUF,GOJ,нет прямых рейсов конкурентов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-nizhny-novgorod.htm,только собственный рейс Red Wings,
+KJA,KUF,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnoyarsk-samara.htm,на странице нет расписания на неделю,
+GOJ,KUF,Red Wings,2,true,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/nizhny-novgorod-samara.htm,пн пт,
+GOJ,KUF,нет прямых рейсов конкурентов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/nizhny-novgorod-samara.htm,только собственный рейс Red Wings,
+VOG,KUF,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/volgograd-samara.htm,на странице нет расписания на неделю,
+PEE,KUF,ЮВТ Аэро,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/perm-samara.htm,ср пт,5682
+KUF,SVX,Red Wings,7,true,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-yekaterinburg.htm,ежедневно,6125
+KUF,SVX,NordStar,7,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-yekaterinburg.htm,ежедневно,
+KUF,SVX,Utair,6,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-yekaterinburg.htm,пн вт ср пт сб вс,5725
+OVB,SVX,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/novosibirsk-yekaterinburg.htm,на странице нет расписания на неделю,
+OVB,CEK,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/novosibirsk-chelyabinsk.htm,на странице нет расписания на неделю,
+UFA,SVX,Utair,14,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/ufa-yekaterinburg.htm,ежедневно 2 рейса,5310
+UFA,SVX,Red Wings,4,true,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/ufa-yekaterinburg.htm,собственный рейс пн ср пт сб,4515
+KUF,PEE,ЮВТ Аэро,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-perm.htm,ср сб,
+KUF,CEK,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-chelyabinsk.htm,на странице нет расписания на неделю,
+KUF,VOG,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-volgograd.htm,на странице нет расписания на неделю,
