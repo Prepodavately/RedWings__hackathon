@@ -32,13 +32,23 @@ SCHEDULES_CACHE = RAW_DIR / "schedules_raw.json"
 
 HYPOTHESES = ("hub", "p2p")
 
-# Координаты аэропортов (IATA). KUF, GOJ, UFA — из repoArchitecture.ts; KZN — справочник, проверить.
+# Координаты аэропортов (IATA). KUF, GOJ, UFA — из repoArchitecture.ts, PEE — из старого стаба;
+# остальные — справочные значения, проверить по OurAirports/Википедии.
 AIRPORT_COORDS = {
     "KUF": (53.50, 50.15),
     "GOJ": (56.23, 43.78),
     "UFA": (54.55, 55.87),
     "KZN": (55.61, 49.28),
+    "SVX": (56.74, 60.80),
+    "KRR": (45.03, 39.17),
+    "KJA": (56.17, 92.49),
+    "OVB": (55.01, 82.65),
+    "OMS": (54.97, 73.31),
+    "PEE": (57.91, 56.02),
+    "CEK": (55.31, 61.51),
+    "VOG": (48.78, 44.35),
 }
+MAX_ROUTES = 12                # config/settings.yaml: network.max_routes
 
 # ---- ДОПУЩЕНИЯ МОДЕЛИ (не из источников; менять здесь и пересчитывать) ----
 SEATS_PER_AIRCRAFT = 100       # config/settings.yaml: fleet.default_seats
@@ -144,10 +154,18 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
                 )
             else:
                 comp_flights = None
+                if pd.notna(a.competitor_share_pct):
+                    airport_comp = (
+                        f"В аэропорту {a.iata} доля конкурентов {a.competitor_share_pct:.0f}% "
+                        f"({a.main_competitor}, data/raw/rosaviatsia_2025.csv)."
+                    )
+                else:
+                    airport_comp = (
+                        f"Доля конкурентов в аэропорту {a.iata} не найдена в открытых источниках."
+                    )
                 comp_text = (
                     f"Конкуренты на паре: НЕ ИЗМЕРЕНО (data/raw/schedules_raw.json пуст). "
-                    f"В аэропорту {a.iata} доля конкурентов {a.competitor_share_pct:.0f}% "
-                    f"({a.main_competitor}, data/raw/rosaviatsia_2025.csv)."
+                    f"{airport_comp}"
                 )
 
             proof = (
@@ -204,8 +222,9 @@ def get_network_routes(hypothesis: str, hub_iata: str = "KUF") -> pd.DataFrame:
     """
     Маршруты из data/processed/routes_proof.parquet для гипотезы.
 
-    hypothesis="p2p": все направления между городами набора (прямые региональные рейсы).
-    hypothesis="hub": только направления с хабом hub_iata (в обе стороны).
+    hypothesis="p2p": направления между городами набора (прямые региональные рейсы).
+    hypothesis="hub": направления с хабом hub_iata (в обе стороны).
+    Оба варианта обрезаются до MAX_ROUTES лучших по пассажиропотоку.
     В каждой строке есть proof_source: откуда взят пассажиропоток и частота конкурентов.
     """
     if hypothesis not in HYPOTHESES:
@@ -220,6 +239,8 @@ def get_network_routes(hypothesis: str, hub_iata: str = "KUF") -> pd.DataFrame:
             raise ValueError(f"Хаб {hub_iata} отсутствует в данных: {sorted(set(routes['origin']))}")
         routes = routes[(routes["origin"] == hub_iata) | (routes["dest"] == hub_iata)]
 
+    routes = routes.sort_values("pax", ascending=False).head(MAX_ROUTES).reset_index(drop=True)
+
     if len(routes) < MIN_ROUTES:
         warnings.warn(
             f"Гипотеза {hypothesis!r}: {len(routes)} маршрутов, минимум {MIN_ROUTES}. "
@@ -227,7 +248,7 @@ def get_network_routes(hypothesis: str, hub_iata: str = "KUF") -> pd.DataFrame:
             stacklevel=2,
         )
 
-    return routes.sort_values("pax", ascending=False).reset_index(drop=True)
+    return routes
 
 
 if __name__ == "__main__":

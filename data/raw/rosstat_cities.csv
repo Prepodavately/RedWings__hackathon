@@ -1,5 +1,13 @@
-iata,city_name,region,agglomeration_pop_mln
-KUF,Самара,ПФО,2.74
-GOJ,Нижний Новгород,ПФО,2.08
-UFA,Уфа,ПФО,1.68
-KZN,Казань,ПФО,1.79
+iata,city_name,region,agglomeration_pop_mln,source
+KUF,Самара,ПФО,2.74,файл команды (исходный источник не указан)
+GOJ,Нижний Новгород,ПФО,2.08,файл команды (исходный источник не указан)
+UFA,Уфа,ПФО,1.68,файл команды (исходный источник не указан)
+KZN,Казань,ПФО,1.79,файл команды (исходный источник не указан)
+SVX,Екатеринбург,УФО,1.548,"Росстат, население на 1.01.2025 (город, НЕ агломерация); таблица https://kz24.news/article/interesnye-mesta/samye-bolshie-goroda-rossii.html; Свердловскстат дает 1.580 - сверить"
+KRR,Краснодар,ЮФО,1.155,"Росстат, население на 1.01.2025 (город, НЕ агломерация); таблица https://kz24.news/article/interesnye-mesta/samye-bolshie-goroda-rossii.html"
+KJA,Красноярск,СФО,1.212,"Росстат, население на 1.01.2025 (город, НЕ агломерация); таблица https://kz24.news/article/interesnye-mesta/samye-bolshie-goroda-rossii.html"
+OVB,Новосибирск,СФО,1.637,"Росстат, население на 1.01.2025 (город, НЕ агломерация); таблица https://kz24.news/article/interesnye-mesta/samye-bolshie-goroda-rossii.html"
+OMS,Омск,СФО,1.101,"Росстат, население на 1.01.2025 (город, НЕ агломерация); таблица https://kz24.news/article/interesnye-mesta/samye-bolshie-goroda-rossii.html"
+PEE,Пермь,ПФО,1.028,"Росстат, население на 1.01.2025 (город, НЕ агломерация); оценка Росстата по данным новостей https://kz24.news/article/interesnye-mesta/samye-bolshie-goroda-rossii.html"
+CEK,Челябинск,УФО,1.177,"Росстат, население на 1.01.2025 (город, НЕ агломерация); таблица https://kz24.news/article/interesnye-mesta/samye-bolshie-goroda-rossii.html; другой источник дает 1.197 - сверить"
+VOG,Волгоград,ЮФО,1.012,"Росстат, население на 1.01.2025 (город, НЕ агломерация); разброс источников 1.001-1.019 - сверить; https://kz24.news/article/interesnye-mesta/samye-bolshie-goroda-rossii.html"
