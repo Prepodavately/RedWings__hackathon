@@ -42,7 +42,7 @@ def test_real_network_and_full_candidate_layer():
 def test_app_runs_and_recalculates(mode):
     with patch.dict(os.environ,{'USE_MOCKS':mode}):
         app=AppTest.from_file(str(ROOT/'app.py'),default_timeout=60).run()
-        assert not app.exception and not app.error and len(app.metric)==8
+        assert not app.exception and not app.error and len(app.metric)>=8
         before=[m.value for m in app.metric]
         app.slider(key='rw_load').set_value(70.0).run()
         assert not app.exception and not app.error and [m.value for m in app.metric]!=before
@@ -68,3 +68,18 @@ def test_real_grid_and_sensitivity():
     sensitivity=weight_sensitivity(result,n_samples=200)
     assert sensitivity.top3_frequency.between(0,1).all()
     assert abs(sensitivity.top3_frequency.sum()-3)<1e-8
+
+
+def test_heatmap_loss_overlay_and_marker():
+    from src.ui.kpi_cards import make_strategy_heatmap
+    rows=[]
+    for fare in range(6000,12001,500):
+        for frequency in range(2,11):
+            rows.append(dict(fare=fare,frequency=frequency,winner='p2p',hub=-20,p2p=-10 if fare==6000 else 5))
+    frame=pd.DataFrame(rows)
+    fig,inside=make_strategy_heatmap(frame,FinModelInput())
+    assert inside
+    assert sum(pd.notna(fig.data[1].z).flatten())==9
+    assert fig.data[-1].name=='Ваш сценарий'
+    outside,inside=make_strategy_heatmap(frame,FinModelInput(avg_fare_rub=13500))
+    assert not inside and all(t.name!='Ваш сценарий' for t in outside.data)

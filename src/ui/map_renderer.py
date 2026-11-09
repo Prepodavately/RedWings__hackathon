@@ -33,7 +33,7 @@ def make_route_figure(routes_df,scored_cities,use_mocks=False,selected_route=Non
         if a is None or b is None:
             missing.append(f"{row['origin']} → {row['dest']}");continue
         points[row['origin']]=a;points[row['dest']]=b
-        fig.add_trace(go.Scattergeo(lon=[a[0],b[0]],lat=[a[1],b[1]],mode='lines',line=dict(color='#cb2440',width=2),name=f"{row['origin']} → {row['dest']}",showlegend=False))
+        fig.add_trace(go.Scattergeo(lon=[a[0],b[0]],lat=[a[1],b[1]],mode='lines',line=dict(color='#90A9C2',width=1.8),name=f"{row['origin']} → {row['dest']}",showlegend=False))
     points.update(routes_df.attrs.get('city_coordinates', {}))
     for city in scored_cities:
         if city.iata not in points and use_mocks and city.iata in DEMO_CENTRES:points[city.iata]=DEMO_CENTRES[city.iata]
@@ -47,7 +47,7 @@ def make_route_figure(routes_df,scored_cities,use_mocks=False,selected_route=Non
             for pts,name,color,dash in [([a,MOSCOW,b],'Через Москву','#d92344','dash'),([a,b],'Прямой маршрут','#119968','solid')]:
                 fig.add_trace(go.Scattergeo(lon=[v[0] for v in pts],lat=[v[1] for v in pts],mode='lines',line=dict(color=color,width=4,dash=dash),name=name))
     fig.update_geos(scope='asia',projection_type='natural earth',showland=True,landcolor='#e7edf3',showcountries=True,countrycolor='white',showocean=True,oceancolor='#f6f9fc',lonaxis_range=[25,90],lataxis_range=[38,68])
-    fig.update_layout(height=560,margin=dict(l=0,r=0,t=10,b=0),legend=dict(orientation='h'))
+    fig.update_layout(height=590,margin=dict(l=0,r=0,t=25,b=0),legend=dict(orientation='h',y=1.05),paper_bgcolor='white')
     return fig,missing
 
 
@@ -70,5 +70,6 @@ def render_route_network_map(routes_df,scored_cities,use_mocks=False):
     absent=[c.iata for c in scored_cities if c.iata not in (set(routes_df.origin)|set(routes_df.dest)|set(routes_df.attrs.get('city_coordinates',{})))]
     if absent and not use_mocks:st.warning('Города вне маршрутов без координат в CityScoreDTO: '+', '.join(absent)+'. Dev 1 должен передать их координаты для полного слоя кандидатов.')
     if not 8<=len(routes_df)<=12:st.warning('Итоговая сеть должна содержать 8–12 маршрутов.')
-    st.dataframe(routes_df,use_container_width=True,hide_index=True)
+    with st.expander('Таблица сети и исходные поля',expanded=False):
+        st.dataframe(routes_df,use_container_width=True,hide_index=True)
     st.download_button('Скачать маршруты · CSV',routes_df.to_csv(index=False).encode('utf-8-sig'),'routes.csv','text/csv')

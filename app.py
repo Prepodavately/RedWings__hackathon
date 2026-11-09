@@ -24,9 +24,8 @@ def prepare_data(signature):
 
 def main():
     st.set_page_config(page_title='Red Wings · Network Lab',page_icon='✈',layout='wide')
-    st.markdown('<style>.block-container{max-width:1450px;padding-top:2rem}h1{letter-spacing:-1px}div[data-testid="stMetric"]{border:1px solid #dce1eb;border-radius:12px;padding:15px}div[data-testid="stMetricValue"]{font-size:1.8rem}</style>',unsafe_allow_html=True)
-    st.caption('RED WINGS / NETWORK LAB · Командная интеграция')
-    st.title('Сеть, которую можно проверить')
+    from src.ui.visual_style import apply_style, hero
+    apply_style();hero()
     mode=os.getenv('USE_MOCKS','0')
     if mode not in {'0','1'}:st.error('USE_MOCKS должен быть 0 или 1');return
     demo=mode=='1'
@@ -50,7 +49,7 @@ def main():
                 result=score_cities(features,weights,mode='auto',hypothesis='hub')
                 cities=get_scored_cities(weights,data=features,mode='auto',hypothesis='hub')
             top=[c for c in cities if c.is_top3]
-            if result.mode!='case':st.warning('Рейтинг предварительный: нет полного набора доказательств для режима case. Подробнее во вкладке «Данные».')
+            if result.mode!='case':st.warning('Рейтинг предварительный: нет полного набора доказательств для режима case. Подробнее во вкладке «Источники и план».')
         options=[c.iata for c in top]
         if not options:raise ValueError('Нет допустимых кандидатов на хаб')
         if st.session_state.get('rw_live_hub') not in options:st.session_state['rw_live_hub']=options[0]
@@ -69,7 +68,7 @@ def main():
         st.sidebar.info(f"В расчёте и на карте: {counts['hub']} маршрутов хаба, {counts['p2p']} P2P. Размер сети задаёт Dev 1.")
         comparison=economics(params,top)
     except Exception as exc:st.error(f'Не удалось собрать данные и расчёт: {exc}');return
-    tabs=st.tabs(['01 · Решение','02 · Маршруты','03 · Города и устойчивость','04 · Стресс-тест','05 · Данные'])
+    tabs=st.tabs(['Обзор решения','Маршрутная сеть','Города и устойчивость','Стресс-тест','Источники и план'])
     with tabs[0]:
         render_comparison_kpis(comparison)
         st.caption('Пассажиры считаются по участкам перелёта, не как уникальные люди. Прирост доли предполагает отсутствие перетока с существующих рейсов RW.')
@@ -78,7 +77,13 @@ def main():
             b=economics(replace(params,scenario=scenario),top)
             for item in [b.hub,b.p2p]:rows.append({'scenario':scenario,**asdict(item)})
         st.subheader('Обе стратегии в обоих сценариях')
-        st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+        summary=pd.DataFrame(rows)
+        summary['Стратегия']=summary.code.map({'hub':'Хаб','p2p':'P2P'})
+        summary['Сценарий']=summary.scenario.map({'base':'Базовый','conservative':'Осторожный'})
+        fig=px.bar(summary,x='Сценарий',y='ebitdar_mln_rub',color='Стратегия',barmode='group',color_discrete_map={'Хаб':'#D82F4C','P2P':'#247AAB'},labels={'ebitdar_mln_rub':'EBITDAR, млн ₽'},text_auto='.0f')
+        fig.add_hline(y=0,line_color='#8998AC')
+        st.plotly_chart(fig,use_container_width=True)
+        with st.expander('Все показатели сценариев'):st.dataframe(summary,hide_index=True,use_container_width=True)
     with tabs[1]:
         strategy=st.radio('Сеть',['hub','p2p'],index=0 if comparison.winner=='hub' else 1,format_func=lambda x:'Новый хаб' if x=='hub' else 'Прямые рейсы',horizontal=True)
         routes=networks[strategy].copy()
@@ -88,7 +93,7 @@ def main():
         render_route_passport(routes)
     with tabs[2]:
         frame=result.table if result is not None else pd.DataFrame([asdict(c) for c in cities])
-        st.plotly_chart(px.bar(frame,x='city_name',y='total_score',color='is_top3',labels={'city_name':'Город','total_score':'Баллы'}),use_container_width=True)
+        st.plotly_chart(px.bar(frame.sort_values('total_score'),y='city_name',x='total_score',orientation='h',color='is_top3',color_discrete_map={True:'#D82F4C',False:'#C6D3E4'},labels={'city_name':'','total_score':'Итоговый балл','is_top3':'Топ-3'},height=490),use_container_width=True)
         st.dataframe(frame,hide_index=True,use_container_width=True)
         render_research(result,params,demo)
     with tabs[3]:
@@ -98,7 +103,7 @@ def main():
         for load in range(50,96,5):
             b=economics(replace(params,load_factor_pct=float(load)),top)
             for item in [b.hub,b.p2p]:rows.append({'Загрузка на входе, %':load,'Стратегия':item.title,'EBITDAR, млн ₽':item.ebitdar_mln_rub})
-        fig=px.line(pd.DataFrame(rows),x='Загрузка на входе, %',y='EBITDAR, млн ₽',color='Стратегия');fig.add_hline(y=0,line_dash='dash')
+        fig=px.line(pd.DataFrame(rows),x='Загрузка на входе, %',y='EBITDAR, млн ₽',color='Стратегия',color_discrete_map={comparison.hub.title:'#D82F4C',comparison.p2p.title:'#247AAB'},markers=True);fig.add_hline(y=0,line_dash='dash')
         st.plotly_chart(fig,use_container_width=True)
     with tabs[4]:
         st.subheader('Происхождение и ограничения')
