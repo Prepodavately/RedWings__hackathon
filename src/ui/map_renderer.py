@@ -67,7 +67,7 @@ def render_route_network_map(routes_df,scored_cities,use_mocks=False):
             st.caption('Расстояния по большой окружности; Москва — условный центр города. Это не фактические трассы. Экономия времени требует расписаний и длительности стыковки.')
             if 'flight_time_min' in row:st.write(f"Прямой перелёт по данным провайдера: {row['flight_time_min']} мин.")
     if use_mocks:st.caption('ДЕМО: условные данные и приблизительные центры городов, не координаты аэропортов.')
-    absent=[c.iata for c in scored_cities if c.iata not in set(routes_df.origin)|set(routes_df.dest)]
+    absent=[c.iata for c in scored_cities if c.iata not in (set(routes_df.origin)|set(routes_df.dest)|set(routes_df.attrs.get('city_coordinates',{})))]
     if absent and not use_mocks:st.warning('Города вне маршрутов без координат в CityScoreDTO: '+', '.join(absent)+'. Dev 1 должен передать их координаты для полного слоя кандидатов.')
     if not 8<=len(routes_df)<=12:st.warning('Итоговая сеть должна содержать 8–12 маршрутов.')
     st.dataframe(routes_df,use_container_width=True,hide_index=True)

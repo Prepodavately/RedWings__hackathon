@@ -29,13 +29,10 @@ def render_sidebar_controls() -> Tuple[ScoringWeights, FinModelInput]:
         fare = st.slider('Средний тариф, ₽', 5500.0, 13500.0, defaults.avg_fare_rub, 100.0, key='rw_fare')
         frequency = st.slider('Частота на маршрут за неделю', 2, 10, defaults.weekly_freq_per_route, key='rw_frequency',
                               help='По ТЗ: парные оборотные рейсы в неделю на маршрут.')
-        hub = st.selectbox('Хаб для сравнения', ['KUF', 'GOJ', 'SVX'],
-                           format_func=lambda x: {'KUF':'Самара · KUF','GOJ':'Нижний Новгород · GOJ','SVX':'Екатеринбург · SVX'}[x], key='rw_hub')
-        if hub == 'SVX':
-            st.warning('SVX — действующая база. По ТЗ доступна для сравнения; её расширение нельзя называть открытием нового хаба.')
+        hub = defaults.hub_iata
         with st.expander('Флот и размер сети'):
             seats = st.number_input('Кресел в самолёте', 93, 103, defaults.aircraft_seats, key='rw_seats')
-            routes = st.slider('Маршрутов в расчёте', 8, 12, defaults.active_routes_count, key='rw_routes')
+            routes = defaults.active_routes_count
         st.divider()
         with st.expander('Веса скоринга городов', expanded=True):
             raw = {key: st.slider(label, 0, 100, round(asdict(ScoringWeights())[key]*100), key='rw_'+key)

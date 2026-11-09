@@ -45,4 +45,4 @@ def get_network_routes(hypothesis,hub_iata='KUF'):
     for i,(o,d) in enumerate(pairs):
         a,b=lookup[o],lookup[d]
         rows.append(dict(route_code=f'DEMO-{i+1:03}',origin_iata=o,origin_city=a[1],dest_iata=d,dest_city=b[1],lat_o=a[3],lon_o=a[2],lat_d=b[3],lon_d=b[2],competitor_flights_weekly=i%4,competitor_fare_rub=7000+200*i,subsidy_eligible=False,launch_quarter='Q1 2028',proof_source='ДЕМО — искусственная строка для проверки UI; доказательство спроса отсутствует.'))
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows[:10])

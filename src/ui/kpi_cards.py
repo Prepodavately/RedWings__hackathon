@@ -5,7 +5,8 @@ import streamlit as st
 
 
 def render_comparison_kpis(comparison):
-    st.success(('Вердикт: прямые рейсы' if comparison.winner == 'p2p' else 'Вердикт: региональный хаб') + '\n\n' + comparison.rationale)
+    verdict = st.warning if max(comparison.hub.ebitdar_mln_rub, comparison.p2p.ebitdar_mln_rub)<0 else st.success
+    verdict(('Вердикт: прямые рейсы' if comparison.winner == 'p2p' else 'Вердикт: региональный хаб') + '\n\n' + comparison.rationale)
     for col, result, other in zip(st.columns(2), [comparison.p2p, comparison.hub], [comparison.hub, comparison.p2p]):
         with col:
             st.subheader(result.title)

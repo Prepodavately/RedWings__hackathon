@@ -1,6 +1,7 @@
-"""Dev 4: shared Streamlit entry point, USE_MOCKS=1 or USE_MOCKS=0."""
+"""Integrated team dashboard. Real providers by default; explicit mock mode."""
 import os
-import json
+import hashlib
+import warnings
 from dataclasses import asdict, replace
 from pathlib import Path
 import pandas as pd
@@ -9,109 +10,119 @@ import streamlit as st
 from src.ui.sidebar_controls import render_sidebar_controls
 from src.ui.kpi_cards import render_comparison_kpis, render_strategy_heatmap
 from src.ui.map_renderer import render_route_network_map
-from src.ui.roadmap_chart import render_sj100_roadmap
-from src.ui.provider_bridge import get_providers, load_comparison, load_routes, ProviderNotReady
+from src.ui.provider_bridge import load_routes
+from src.ui.research_panels import render_research, render_route_passport
+
+ROOT=Path(__file__).parent
+
+@st.cache_data(show_spinner='Подготовка таблиц команды…')
+def prepare_data(signature):
+    from src.parsers.build_dataset import build_processed_tables, build_cities_features
+    build_processed_tables()
+    return build_cities_features()
 
 
 def main():
     st.set_page_config(page_title='Red Wings · Network Lab',page_icon='✈',layout='wide')
-    st.markdown('''<style>.block-container{max-width:1450px;padding-top:2rem}h1{letter-spacing:-1.4px}div[data-testid="stMetric"]{border:1px solid #dce1eb;border-radius:12px;padding:16px}div[data-testid="stMetricValue"]{font-size:1.8rem}.eyebrow{color:#c9233e;font-weight:800;letter-spacing:3px;font-size:12px}</style>''',unsafe_allow_html=True)
-    st.markdown('<div class="eyebrow">RED WINGS / NETWORK LAB</div>',unsafe_allow_html=True)
-    st.title('Где начинается следующий маршрут')
-    st.caption('Новый региональный хаб или прямые рейсы · Дашборд команды')
-    mode=os.getenv('USE_MOCKS','1')
-    if mode not in {'0','1'}:st.error('USE_MOCKS должен быть 0 или 1.');return
-    use_mocks=mode=='1'
-    if use_mocks:
-        st.warning('USE_MOCKS=1 · Интерактивные синтетические данные: 12 городов и условная экономика по формулам командного ТЗ. Это проверка интерфейса, не доказательство спроса и не прогноз.')
-    else:st.info('USE_MOCKS=0 · Подключены модули Dev 1–3. Интерфейс не подменяет их результаты демонстрационными.')
+    st.markdown('<style>.block-container{max-width:1450px;padding-top:2rem}h1{letter-spacing:-1px}div[data-testid="stMetric"]{border:1px solid #dce1eb;border-radius:12px;padding:15px}div[data-testid="stMetricValue"]{font-size:1.8rem}</style>',unsafe_allow_html=True)
+    st.caption('RED WINGS / NETWORK LAB · Командная интеграция')
+    st.title('Сеть, которую можно проверить')
+    mode=os.getenv('USE_MOCKS','0')
+    if mode not in {'0','1'}:st.error('USE_MOCKS должен быть 0 или 1');return
+    demo=mode=='1'
+    st.warning('ДЕМО: искусственные данные и условная экономика.' if demo else 'Модули команды подключены. Это сценарная модель: спрос, затраты и субсидии частично заданы допущениями, а не наблюдениями.')
     weights,params=render_sidebar_controls()
+    result=None;features=None
     try:
-        scoring,economics,network=get_providers(use_mocks)
-        cities,comparison=load_comparison(scoring,economics,weights,params)
-    except (ProviderNotReady,NotImplementedError,FileNotFoundError,ImportError) as exc:
-        st.error(str(exc));st.info('Для работы над интерфейсом запустите USE_MOCKS=1. Для настоящих расчётов дождитесь реализации модулей команды.');return
-    except Exception as exc:
-        st.error(f'Ошибка расчётного модуля: {type(exc).__name__}: {exc}');return
-    tabs=st.tabs(['01 · Сравнение','02 · Города','03 · Проверка сценариев','04 · Данные и запуск'])
+        if demo:
+            from src.mocks.mock_provider import get_scored_cities, evaluate_hypotheses, get_network_routes
+            cities=get_scored_cities(weights)
+            top=[c for c in cities if c.is_top3 and c.iata!='SVX']
+        else:
+            from src.parsers.build_dataset import get_network_routes
+            from src.scoring.city_scorer import score_cities, get_scored_cities
+            from src.models.unit_economics import evaluate_hypotheses
+            files=sorted((ROOT/'data/raw').glob('*'))+sorted((ROOT/'src/parsers').glob('*.py'))
+            signature=hashlib.sha256(b''.join(f.read_bytes() for f in files if f.is_file())).hexdigest()
+            features=prepare_data(signature)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore',UserWarning)
+                result=score_cities(features,weights,mode='auto',hypothesis='hub')
+                cities=get_scored_cities(weights,data=features,mode='auto',hypothesis='hub')
+            top=[c for c in cities if c.is_top3]
+            if result.mode!='case':st.warning('Рейтинг предварительный: нет полного набора доказательств для режима case. Подробнее во вкладке «Данные».')
+        options=[c.iata for c in top]
+        if not options:raise ValueError('Нет допустимых кандидатов на хаб')
+        if st.session_state.get('rw_live_hub') not in options:st.session_state['rw_live_hub']=options[0]
+        names={c.iata:c.city_name for c in cities}
+        hub=st.sidebar.selectbox('Хаб из актуального топ-3',options,format_func=lambda x:names[x]+' · '+x,key='rw_live_hub')
+        networks={h:load_routes(get_network_routes,h,hub) for h in ['hub','p2p']}
+        counts={h:len({tuple(sorted((a,b))) for a,b in zip(r.origin,r.dest)}) for h,r in networks.items()}
+        if any(not 8<=n<=12 for n in counts.values()):raise ValueError(f'Сеть вне диапазона 8–12 уникальных пар: {counts}')
+        params=replace(params,hub_iata=hub)
+        def economics(p,c):
+            # Each hypothesis is calculated with the size of its own visible network.
+            if counts['hub']==counts['p2p']:
+                return evaluate_hypotheses(replace(p,active_routes_count=counts['hub']),c)
+            raise ValueError('Сети имеют разное число маршрутов. Для сравнения согласуйте единый набор с Dev 1 и Dev 3.')
+        params=replace(params,active_routes_count=counts['hub'])
+        st.sidebar.info(f"В расчёте и на карте: {counts['hub']} маршрутов хаба, {counts['p2p']} P2P. Размер сети задаёт Dev 1.")
+        comparison=economics(params,top)
+    except Exception as exc:st.error(f'Не удалось собрать данные и расчёт: {exc}');return
+    tabs=st.tabs(['01 · Решение','02 · Маршруты','03 · Города и устойчивость','04 · Стресс-тест','05 · Данные'])
     with tabs[0]:
         render_comparison_kpis(comparison)
-        st.subheader('Маршрутная сеть')
-        selected=st.radio('Стратегия на карте',['hub','p2p'],format_func=lambda x:{'hub':'Новый хаб','p2p':'Прямые рейсы'}[x],horizontal=True,key='rw_network')
-        routes=None
-        try:
-            routes=load_routes(network,selected,params.hub_iata)
-            if not use_mocks:
-                try:
-                    from src.parsers.rosstat_loader import load_rosstat_and_rosaviatsia
-                    features=load_rosstat_and_rosaviatsia()
-                    if isinstance(features,pd.DataFrame) and {'iata','lat','lon'} <= set(features.columns):
-                        valid=features.dropna(subset=['lat','lon'])
-                        valid=valid[valid.lat.between(-90,90)&valid.lon.between(-180,180)]
-                        routes.attrs['city_coordinates']={r.iata:(r.lon,r.lat) for r in valid.itertuples()}
-                except Exception as exc:st.warning(f'Слой всех кандидатов недоступен: {exc}')
-            st.caption(f'В модели: {params.active_routes_count} маршрутов; провайдер сети вернул {len(routes)}. Таблица не обрезается автоматически: get_network_routes не принимает число маршрутов.')
-            routes['proposed_base_fare_rub']=params.avg_fare_rub
-            render_route_network_map(routes,cities,use_mocks=use_mocks)
-        except Exception as exc:st.error(f'Маршруты недоступны: {exc}')
+        st.caption('Пассажиры считаются по участкам перелёта, не как уникальные люди. Прирост доли предполагает отсутствие перетока с существующих рейсов RW.')
+        rows=[]
+        for scenario in ['base','conservative']:
+            b=economics(replace(params,scenario=scenario),top)
+            for item in [b.hub,b.p2p]:rows.append({'scenario':scenario,**asdict(item)})
+        st.subheader('Обе стратегии в обоих сценариях')
+        st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
     with tabs[1]:
-        st.subheader('Рейтинг от модуля скоринга')
-        frame=pd.DataFrame([asdict(c) for c in cities]).sort_values('rank')
-        if len(frame)<10:st.warning(f'Сейчас в ответе {len(frame)} города. Для лонглиста требуется не менее 10.')
-        if frame[frame.is_top3].iata.isin(['SVX','MOW','SVO','VKO','DME','ZIA']).any():
-            st.warning('В топ-3 провайдера есть действующая база в Москве или Екатеринбурге. Она не подходит в качестве нового дополнительного хаба; состав кандидатов должен проверить Dev 2.')
-        fig=px.bar(frame.sort_values('total_score'),x='total_score',y='city_name',orientation='h',color_discrete_sequence=['#c9233e'],labels={'total_score':'Оценка провайдера','city_name':''})
-        fig.update_layout(paper_bgcolor='rgba(0,0,0,0)',plot_bgcolor='white',margin=dict(t=10,l=0,r=10,b=0),height=360)
-        st.plotly_chart(fig,use_container_width=True)
-        st.dataframe(frame,hide_index=True,use_container_width=True)
-        st.download_button('Скачать рейтинг · CSV',frame.to_csv(index=False).encode('utf-8-sig'),'city_scores.csv','text/csv')
-        st.caption('Интерфейс не меняет баллы, места и флаг is_top3. За расчёт рейтинга отвечает провайдер.')
+        strategy=st.radio('Сеть',['hub','p2p'],index=0 if comparison.winner=='hub' else 1,format_func=lambda x:'Новый хаб' if x=='hub' else 'Прямые рейсы',horizontal=True)
+        routes=networks[strategy].copy()
+        if features is not None:routes.attrs['city_coordinates']={r.iata:(r.lon,r.lat) for r in features.itertuples()}
+        routes['proposed_base_fare_rub']=params.avg_fare_rub
+        render_route_network_map(routes,cities,demo)
+        render_route_passport(routes)
     with tabs[2]:
-        st.subheader('Сравнение обоих сценариев')
-        st.caption('Для каждого сценария вызывается evaluate_hypotheses с теми же параметрами и соответствующим scenario. Демо использует условные коэффициенты; реальные результаты предоставляет Dev 3.')
-        try:
-            bundles={scenario:load_comparison(scoring,economics,weights,replace(params,scenario=scenario))[1] for scenario in ['base','conservative']}
-            rows=[]
-            for scenario,bundle in bundles.items():
-                for result in [bundle.hub,bundle.p2p]: rows.append({'scenario':scenario,**asdict(result)})
-            scenario_frame=pd.DataFrame(rows)
-            st.dataframe(scenario_frame,hide_index=True,use_container_width=True)
-            st.download_button('Скачать 4 варианта · CSV',scenario_frame.to_csv(index=False).encode('utf-8-sig'),'scenarios.csv','text/csv')
-        except Exception as exc:st.error(f'Не удалось сравнить сценарии: {exc}')
-        st.subheader('Проверить снижение загрузки')
-        test_load=st.slider('Тестовая загрузка, %',0.0,100.0,max(0.0,params.load_factor_pct-10),1.0,key='rw_test_load')
-        try:
-            _,alternative=load_comparison(scoring,economics,weights,replace(params,load_factor_pct=test_load))
-            st.dataframe(pd.DataFrame([{'Стратегия':base.title,'Текущая выручка, млн ₽':base.annual_revenue_mln_rub,'При тестовой загрузке, млн ₽':alt.annual_revenue_mln_rub,'Разница, млн ₽':alt.annual_revenue_mln_rub-base.annual_revenue_mln_rub} for base,alt in [(comparison.hub,alternative.hub),(comparison.p2p,alternative.p2p)]]),hide_index=True,use_container_width=True)
-        except Exception as exc:st.error(f'Проверка загрузки недоступна: {exc}')
-        render_strategy_heatmap(economics, params, [c for c in cities if c.is_top3])
+        frame=result.table if result is not None else pd.DataFrame([asdict(c) for c in cities])
+        st.plotly_chart(px.bar(frame,x='city_name',y='total_score',color='is_top3',labels={'city_name':'Город','total_score':'Баллы'}),use_container_width=True)
+        st.dataframe(frame,hide_index=True,use_container_width=True)
+        render_research(result,params,demo)
     with tabs[3]:
-        st.subheader('Переданные параметры')
-        payload={'use_mocks':use_mocks,'weights':asdict(weights),'financial_input':asdict(params)}
-        st.json(payload)
-        st.download_button('Скачать параметры · JSON',json.dumps(payload,ensure_ascii=False,indent=2),'parameters.json','application/json')
-        st.subheader('Проверяемость данных')
-        if routes is not None:
-            for field in ['proof_source']:
-                if field not in routes.columns:st.warning(f'В таблице нет поля {field}. Для защиты по каждому маршруту нужны источник и/или метод оценки пассажиров и частоты.')
-            st.dataframe(routes,hide_index=True,use_container_width=True)
-        st.markdown('''Перед защитой команда должна согласовать:
-- по ТЗ `weekly_freq_per_route` — парные обороты; себестоимость в модели должна использовать согласованную единицу рейса;
-- `market_share_delta_pct` по формуле ТЗ отображается в процентных пунктах;
-- период и направление учёта `pax`, правила учёта пересадочных пассажиров;
-- источники и методы оценок для каждого маршрута;
-- реальный расчёт флота, стыковок и расписания.
-''')
-        settings=Path(__file__).parent/'config/settings.yaml'
-        if settings.exists():
-            import yaml
-            try:
-                config=yaml.safe_load(settings.read_text()) or {}
-                baseline=config.get('market',{}).get('red_wings_base_passengers_2025')
-                if baseline is not None and baseline!=2700000:
-                    st.warning(f'Проверить базу сравнения: config/settings.yaml содержит {baseline:,} пассажиров Red Wings за 2025 год; в предоставленной справке кейса — 2 700 000. Интерфейс не исправляет константы модели автоматически.')
-            except (ValueError,TypeError,yaml.YAMLError) as exc:st.warning(f'Не удалось прочитать настройки: {exc}')
-        render_sj100_roadmap(routes,comparison)
-    st.divider();st.caption('Учебный проект команды · Не официальный продукт Red Wings')
+        render_strategy_heatmap(economics,params,top)
+        st.subheader('Запас до безубыточности')
+        rows=[]
+        for load in range(50,96,5):
+            b=economics(replace(params,load_factor_pct=float(load)),top)
+            for item in [b.hub,b.p2p]:rows.append({'Загрузка на входе, %':load,'Стратегия':item.title,'EBITDAR, млн ₽':item.ebitdar_mln_rub})
+        fig=px.line(pd.DataFrame(rows),x='Загрузка на входе, %',y='EBITDAR, млн ₽',color='Стратегия');fig.add_hline(y=0,line_dash='dash')
+        st.plotly_chart(fig,use_container_width=True)
+    with tabs[4]:
+        st.subheader('Происхождение и ограничения')
+        st.json({'mode':mode,'weights':asdict(weights),'params':asdict(params),'network_pairs':counts})
+        if result is not None:
+            for line in result.limitations:st.write('• '+line)
+            st.dataframe(result.audit,hide_index=True,use_container_width=True)
+            st.download_button('Скачать аудит критериев',result.audit.to_csv(index=False).encode('utf-8-sig'),'scoring_audit.csv')
+        for h,r in networks.items():
+            st.write(f'**{h}: {len(r)} строк, {counts[h]} уникальных пар**')
+            missing={c:int(r[c].isna().sum()) if c in r else len(r) for c in ['proof_source','competitor_fare_rub','flight_time_min','launch_quarter']}
+            st.write({'Пустые значения':missing})
+            st.download_button('Скачать сеть '+h,r.to_csv(index=False).encode('utf-8-sig'),h+'_network.csv')
+        st.subheader('Предложенные кварталы запуска')
+        launch_rows=[]
+        for code,frame in networks.items():
+            if 'launch_quarter' in frame:
+                for quarter,count in frame.groupby('launch_quarter').size().items():launch_rows.append({'Стратегия':code,'Квартал':quarter,'Маршрутов':int(count)})
+        if launch_rows:
+            st.dataframe(pd.DataFrame(launch_rows),hide_index=True,use_container_width=True)
+            st.caption('Кварталы переданы Dev 1. Это предложение, не проверенное расписание и не план поставок. Запуск до второй половины 2027 года требует обоснования существующим флотом.')
+        st.info('Годовая экономика — полный год после доступности самолётов. Кварталы запуска из данных не означают подтверждённый план флота. Субсидия на маршрут не гарантирована наличием его в перечне другого перевозчика.')
+        if features is not None:
+            st.dataframe(features,hide_index=True,use_container_width=True)
+            st.download_button('Скачать исходные признаки',features.to_csv(index=False).encode('utf-8-sig'),'features.csv')
 
 if __name__=='__main__':main()
