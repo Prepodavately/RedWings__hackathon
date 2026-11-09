@@ -33,3 +33,124 @@ UFA,SVX,Red Wings,4,true,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia
 KUF,PEE,ЮВТ Аэро,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-perm.htm,ср сб,
 KUF,CEK,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-chelyabinsk.htm,на странице нет расписания на неделю,
 KUF,VOG,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-volgograd.htm,на странице нет расписания на неделю,
+KUF,KRR,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-krasnodar.htm,на странице нет расписания на неделю,
+KUF,KJA,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-krasnoyarsk.htm,на странице нет расписания на неделю,
+KUF,OVB,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-novosibirsk.htm,на странице нет расписания на неделю,
+KUF,OMS,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/samara-omsk.htm,на странице нет расписания на неделю,
+GOJ,UFA,Северный ветер,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/nizhny-novgorod-ufa.htm,пн пт,
+GOJ,KZN,ЮВТ Аэро,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/nizhny-novgorod-kazan.htm,чт вс,
+GOJ,SVX,NordStar,5,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/nizhny-novgorod-yekaterinburg.htm,пн ср чт пт вс,
+GOJ,SVX,Red Wings,5,true,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/nizhny-novgorod-yekaterinburg.htm,собственный рейс пн ср чт пт вс,6747
+GOJ,KRR,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/nizhny-novgorod-krasnodar.htm,на странице нет расписания на неделю,
+UFA,GOJ,Северный ветер,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/ufa-nizhny-novgorod.htm,пн пт,14855
+UFA,KZN,Utair,7,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/ufa-kazan.htm,ежедневно,
+UFA,KZN,Северный ветер,5,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/ufa-kazan.htm,пн вт чт пт вс,
+UFA,KRR,Аэрофлот,3,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/ufa-krasnodar.htm,вт чт сб,9515
+UFA,KJA,Азимут,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/ufa-krasnoyarsk.htm,вт вс,14915
+UFA,OVB,Газпром авиа,1,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/ufa-novosibirsk.htm,чт,
+UFA,OMS,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/ufa-omsk.htm,на странице нет расписания на неделю,
+UFA,PEE,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/ufa-perm.htm,на странице нет расписания на неделю,
+UFA,CEK,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/ufa-chelyabinsk.htm,на странице нет расписания на неделю,
+UFA,VOG,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/ufa-volgograd.htm,на странице нет расписания на неделю,
+GOJ,KJA,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/nizhny-novgorod-krasnoyarsk.htm,на странице нет расписания на неделю,
+GOJ,OVB,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/nizhny-novgorod-novosibirsk.htm,на странице нет расписания на неделю,
+GOJ,OMS,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/nizhny-novgorod-omsk.htm,на странице нет расписания на неделю,
+GOJ,PEE,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/nizhny-novgorod-perm.htm,на странице нет расписания на неделю,
+GOJ,CEK,ЮВТ Аэро,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/nizhny-novgorod-chelyabinsk.htm,чт вс,
+GOJ,VOG,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/nizhny-novgorod-volgograd.htm,на странице нет расписания на неделю,
+KZN,UFA,Северный ветер,5,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-ufa.htm,пн вт чт пт вс,
+KZN,UFA,Utair,7,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-ufa.htm,ежедневно,
+KZN,SVX,NordStar,7,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-yekaterinburg.htm,ежедневно,
+KZN,SVX,Red Wings,7,true,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-yekaterinburg.htm,собственный рейс ежедневно,7785
+KZN,KRR,Северный ветер,3,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-krasnodar.htm,вт чт сб,7558
+KZN,KRR,Аэрофлот,4,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-krasnodar.htm,пн ср пт вс,
+KZN,KJA,Северный ветер,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-krasnoyarsk.htm,чт вс,9589
+KZN,KJA,NordStar,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-krasnoyarsk.htm,чт вс,
+KZN,OVB,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-novosibirsk.htm,единственный рейс ЮВТ Аэро с 1 посадкой - не прямой,
+KZN,OMS,Северный ветер,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-omsk.htm,ср вс,6955
+KZN,PEE,ЮВТ Аэро,3,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-perm.htm,ср пт вс,5253
+KZN,CEK,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-chelyabinsk.htm,ЮВТ Аэро только с 1 посадкой - не прямой,
+KZN,VOG,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/kazan-volgograd.htm,на странице нет расписания на неделю,
+SVX,GOJ,Red Wings,4,true,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-nizhny-novgorod.htm,собственный рейс пн ср пт вс,6747
+SVX,GOJ,NordStar,4,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-nizhny-novgorod.htm,пн ср пт вс,
+SVX,KRR,Победа,4,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-krasnodar.htm,вт ср пт сб,6482
+SVX,KRR,Уральские авиалинии,7,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-krasnodar.htm,ежедневно,11494
+SVX,KJA,Аэрофлот,4,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-krasnoyarsk.htm,пн пт сб вс,
+SVX,KJA,Аэрофлот,1,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-krasnoyarsk.htm,вт,
+SVX,OVB,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-novosibirsk.htm,на странице нет расписания на неделю,
+SVX,OMS,Red Wings,2,true,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-omsk.htm,собственный рейс вт пт,17954
+SVX,VOG,NordStar,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-volgograd.htm,пн чт,6926
+KRR,KUF,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnodar-samara.htm,на странице нет расписания на неделю,
+KRR,GOJ,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnodar-nizhny-novgorod.htm,на странице нет расписания на неделю,
+KRR,UFA,Аэрофлот,3,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnodar-ufa.htm,вт чт сб,12153
+KRR,KZN,Аэрофлот,4,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnodar-kazan.htm,пн ср пт вс,
+KRR,KZN,Северный ветер,3,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnodar-kazan.htm,вт чт сб,7558
+KRR,SVX,Уральские авиалинии,7,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnodar-yekaterinburg.htm,ежедневно,14556
+KRR,SVX,Победа,4,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnodar-yekaterinburg.htm,вт ср пт сб,14474
+KRR,OVB,Аэрофлот,3,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnodar-novosibirsk.htm,ср пт вс,
+KRR,KJA,Аэрофлот,7,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnodar-krasnoyarsk.htm,ежедневно,31661
+KRR,OMS,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnodar-omsk.htm,на странице нет расписания на неделю,
+KRR,PEE,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnodar-perm.htm,на странице нет расписания на неделю,
+KRR,CEK,NordStar,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnodar-chelyabinsk.htm,ср сб,19255
+KRR,VOG,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnodar-volgograd.htm,на странице нет расписания на неделю,
+KJA,GOJ,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnoyarsk-nizhny-novgorod.htm,на странице нет расписания на неделю,
+KJA,UFA,Азимут,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnoyarsk-ufa.htm,вт вс,4096
+KJA,KZN,NordStar,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnoyarsk-kazan.htm,пт пн,16265
+KJA,KZN,Северный ветер,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnoyarsk-kazan.htm,пт пн,9589
+KJA,SVX,Аэрофлот,4,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnoyarsk-yekaterinburg.htm,пн пт сб вс,
+KJA,SVX,Аэрофлот,1,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnoyarsk-yekaterinburg.htm,вт,
+KJA,KRR,Аэрофлот,7,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnoyarsk-krasnodar.htm,ежедневно,
+KJA,OMS,Аэрофлот,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnoyarsk-omsk.htm,пт вс,
+KJA,PEE,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnoyarsk-perm.htm,на странице нет расписания на неделю,
+KJA,CEK,Аэрофлот,3,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnoyarsk-chelyabinsk.htm,пн чт вс,19371
+KJA,VOG,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/krasnoyarsk-volgograd.htm,на странице нет расписания на неделю,
+OVB,GOJ,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/novosibirsk-nizhny-novgorod.htm,на странице нет расписания на неделю,
+OVB,UFA,Газпром авиа,1,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/novosibirsk-ufa.htm,чт,
+OVB,KZN,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/novosibirsk-kazan.htm,на странице нет расписания на неделю,
+OVB,KRR,Аэрофлот,3,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/novosibirsk-krasnodar.htm,ср пт вс,
+OVB,PEE,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/novosibirsk-perm.htm,на странице нет расписания на неделю,
+OVB,VOG,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/novosibirsk-volgograd.htm,на странице нет расписания на неделю,
+OMS,KUF,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/omsk-samara.htm,на странице нет расписания на неделю,
+OMS,GOJ,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/omsk-nizhny-novgorod.htm,на странице нет расписания на неделю,
+OMS,UFA,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/omsk-ufa.htm,на странице нет расписания на неделю,
+OMS,KZN,Северный ветер,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/omsk-kazan.htm,ср вс,7993
+OMS,SVX,Red Wings,2,true,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/omsk-yekaterinburg.htm,собственный рейс ср сб,
+OMS,KRR,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/omsk-krasnodar.htm,на странице нет расписания на неделю,
+OMS,KJA,Аэрофлот,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/omsk-krasnoyarsk.htm,пн сб,
+OMS,OVB,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/omsk-novosibirsk.htm,на странице нет расписания на неделю,
+OMS,PEE,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/omsk-perm.htm,на странице нет расписания на неделю,
+OMS,CEK,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/omsk-chelyabinsk.htm,на странице нет расписания на неделю,
+OMS,VOG,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/omsk-volgograd.htm,на странице нет расписания на неделю,
+PEE,GOJ,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/perm-nizhny-novgorod.htm,на странице нет расписания на неделю,
+PEE,UFA,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/perm-ufa.htm,на странице нет расписания на неделю,
+PEE,KZN,ЮВТ Аэро,3,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/perm-kazan.htm,чт сб вс,12463
+PEE,SVX,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/perm-yekaterinburg.htm,на странице нет расписания на неделю,
+PEE,KRR,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/perm-krasnodar.htm,на странице нет расписания на неделю,
+PEE,KJA,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/perm-krasnoyarsk.htm,на странице нет расписания на неделю,
+PEE,OVB,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/perm-novosibirsk.htm,на странице нет расписания на неделю,
+PEE,OMS,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/perm-omsk.htm,на странице нет расписания на неделю,
+PEE,CEK,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/perm-chelyabinsk.htm,на странице нет расписания на неделю,
+PEE,VOG,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/perm-volgograd.htm,на странице нет расписания на неделю,
+CEK,KUF,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/chelyabinsk-samara.htm,на странице нет расписания на неделю,
+CEK,GOJ,ЮВТ Аэро,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/chelyabinsk-nizhny-novgorod.htm,чт вс,
+CEK,UFA,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/chelyabinsk-ufa.htm,на странице нет расписания на неделю,
+CEK,KZN,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/chelyabinsk-kazan.htm,ЮВТ Аэро только с 1 посадкой - не прямой,
+CEK,SVX,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/chelyabinsk-yekaterinburg.htm,на странице нет расписания на неделю,
+CEK,KRR,NordStar,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/chelyabinsk-krasnodar.htm,ср сб,11470
+CEK,KJA,Аэрофлот,3,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/chelyabinsk-krasnoyarsk.htm,пн чт вс,
+CEK,OVB,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/chelyabinsk-novosibirsk.htm,на странице нет расписания на неделю,
+CEK,OMS,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/chelyabinsk-omsk.htm,на странице нет расписания на неделю,
+CEK,PEE,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/chelyabinsk-perm.htm,на странице нет расписания на неделю,
+CEK,VOG,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/chelyabinsk-volgograd.htm,на странице нет расписания на неделю,
+VOG,GOJ,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/volgograd-nizhny-novgorod.htm,на странице нет расписания на неделю,
+VOG,UFA,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/volgograd-ufa.htm,на странице нет расписания на неделю,
+VOG,KZN,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/volgograd-kazan.htm,на странице нет расписания на неделю,
+VOG,SVX,NordStar,2,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/volgograd-yekaterinburg.htm,пн чт,6926
+VOG,KRR,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/volgograd-krasnodar.htm,на странице нет расписания на неделю,
+VOG,KJA,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/volgograd-krasnoyarsk.htm,на странице нет расписания на неделю,
+VOG,OVB,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/volgograd-novosibirsk.htm,на странице нет расписания на неделю,
+VOG,OMS,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/volgograd-omsk.htm,на странице нет расписания на неделю,
+VOG,PEE,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/volgograd-perm.htm,на странице нет расписания на неделю,
+VOG,CEK,нет прямых рейсов,0,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/volgograd-chelyabinsk.htm,на странице нет расписания на неделю,
+SVX,KZN,Red Wings,7,true,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-kazan.htm,собственный рейс ежедневно,7785
+SVX,KZN,NordStar,7,false,09.11-15.11.2026,https://www.biletdv.ru/raspisanie/avia/yekaterinburg-kazan.htm,ежедневно,

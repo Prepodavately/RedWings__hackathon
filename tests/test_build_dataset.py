@@ -40,10 +40,18 @@ def test_competitor_counts_exclude_own_operator():
     assert "Red Wings уже выполняет 4" in row["proof_source"]
 
 
-def test_unmeasured_pair_is_marked_not_zero():
+def test_all_pairs_measured_for_competitor_flights():
     _build_once()
     routes = pd.read_parquet(ROUTES_PATH)
-    # Пара KUF→OVB не занесена в competitor_schedules.csv: частота не измерена, а не 0
-    row = routes[(routes["origin"] == "KUF") & (routes["dest"] == "OVB")].iloc[0]
-    assert pd.isna(row["competitor_flights_weekly"])
-    assert "НЕ ИЗМЕРЕНО" in row["proof_source"]
+    # Все 132 пары измерены (competitor_schedules.csv): пропусков быть не должно
+    assert routes["competitor_flights_weekly"].notna().all()
+    assert not routes["proof_source"].str.contains("НЕ ИЗМЕРЕНО").any()
+
+
+def test_missing_airport_share_is_marked_not_nan():
+    _build_once()
+    routes = pd.read_parquet(ROUTES_PATH)
+    # У аэропортов без данных о долях конкурентов текст явный, а не 'nan'
+    row = routes[(routes["origin"] == "SVX") & (routes["dest"] == "KUF")].iloc[0]
+    assert pd.isna(row["competitor_share_origin_pct"])
+    assert "не найдена в открытых источниках" in row["proof_source"]
