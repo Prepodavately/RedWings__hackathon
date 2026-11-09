@@ -104,5 +104,29 @@ def load_rosstat_and_rosaviatsia(raw_dir: Path = RAW_DIR) -> pd.DataFrame:
     df["src_airport_pax"] = f"data/raw/{ROSAVIATSIA_FILE} (пассажиропоток аэропорта 2025, см. source)"
     df["src_competitors"] = "data/raw/schedules_raw.json (рейсы конкурентов, неделя 09–15.11.2026)"
 
+    # Доля конкурентов: если нет данных Росавиации по пассажирам — оценка по расписаниям
+    flight_share = _origin_flight_share(sched)
+    has_rosaviatsia = df["competitor_share_pct"].notna()
+    df["competitor_share_source"] = [
+        "Росавиация 2025 (доля пассажиров)" if h
+        else "оценка: доля рейсов конкурентов в расписании 09–15.11.2026 (не доля пассажиров)"
+        for h in has_rosaviatsia
+    ]
+    df["competitor_share_pct"] = [
+        s if h else flight_share[i]
+        for s, h, i in zip(df["competitor_share_pct"], has_rosaviatsia, df["iata"])
+    ]
+    df["main_competitor"] = df["main_competitor"].fillna("нет данных Росавиации (оценка по расписаниям)")
+
     df = df.rename(columns={"airport_pax_2025_mln": "airport_pax_mln"})
     return df.sort_values("iata").reset_index(drop=True)
+
+
+def _origin_flight_share(sched: pd.DataFrame) -> dict:
+    """Доля рейсов конкурентов от всех прямых рейсов (конкуренты + Red Wings) из аэропорта, %."""
+    comp = sched[~sched["own_operator"]].groupby("origin_iata")["weekly_flights"].sum()
+    own = sched[sched["own_operator"]].groupby("origin_iata")["weekly_flights"].sum()
+    total = comp.add(own, fill_value=0)
+    return {
+        o: round(100.0 * comp.get(o, 0) / total[o], 1) for o in total.index if total[o] > 0
+    }

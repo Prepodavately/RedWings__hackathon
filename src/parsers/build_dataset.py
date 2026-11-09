@@ -19,6 +19,7 @@ import math
 import warnings
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from src.parsers.rosstat_loader import (
@@ -155,6 +156,12 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
     Red Wings: pax = рынок_AB × RW_CAPTURE_BASE; freq = ceil(pax / 52 / (SEATS × LF)), минимум 1.
     """
     info = _pair_competitor_info()
+    # Регрессия время в пути (ч) от расстояния (км) по измеренным парам Яндекс.Расписаний
+    fit_pts = [
+        (haversine_km(AIRPORT_COORDS[x], AIRPORT_COORDS[y]), RAIL_MIN_MINUTES[(x, y)] / 60)
+        for (x, y) in RAIL_MIN_MINUTES
+    ]
+    rail_fit = np.polyfit([p[0] for p in fit_pts], [p[1] for p in fit_pts], 1)
     all_fares = [f for v in info.values() for f in v["fares"]]
     fare_fallback = float(pd.Series(all_fares).median()) if all_fares else float("nan")
 
@@ -205,13 +212,15 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
             key = tuple(sorted((a.iata, b.iata)))
             if key in RAIL_MIN_MINUTES:
                 rail_h = round(RAIL_MIN_MINUTES[key] / 60, 2)
-                rail_weak = bool(rail_h >= RAIL_WEAK_THRESHOLD_H)
+                rail_src = "Яндекс Расписания (мин. время в пути)"
                 rail_txt = (f"Ж/д: от {RAIL_MIN_MINUTES[key] // 60} ч {RAIL_MIN_MINUTES[key] % 60} мин "
                             f"(Яндекс Расписания, мин. время в пути).")
             else:
-                rail_h = None
-                rail_weak = None
-                rail_txt = "Ж/д: данных нет (Яндекс Расписания не нашёл пару)."
+                rail_h = round(rail_fit[0] * d_km + rail_fit[1], 2)
+                rail_src = "оценка: линейная регрессия время/расстояние по измеренным парам"
+                rail_txt = (f"Ж/д: около {rail_h:.1f} ч — оценка по расстоянию "
+                            f"(на Яндекс.Расписаниях пары нет).")
+            rail_weak = bool(rail_h >= RAIL_WEAK_THRESHOLD_H)
 
             proof = (
                 f"Пассажиропоток: аэропорт {a.iata} = {a.airport_pax_mln:.3f} млн пасс. в 2025 г. "
@@ -223,12 +232,8 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
                 f"Частота: {pax / WEEKS_PER_YEAR:,.0f} пасс./нед ÷ ({SEATS_PER_AIRCRAFT} мест × "
                 f"{LOAD_FACTOR:.0%}) → {freq} рейс(ов)/нед. "
                 f"{proof_comp} {rail_txt} "
-                f"Доля конкурентов в аэропорту {a.iata}: "
-                + (
-                    f"{a.competitor_share_pct:.0f}% ({a.main_competitor}, data/raw/rosaviatsia_2025.csv)."
-                    if pd.notna(a.competitor_share_pct)
-                    else "не найдена в открытых источниках."
-                )
+                f"Доля конкурентов в аэропорту {a.iata}: {a.competitor_share_pct:.0f}% "
+                f"({a.competitor_share_source})."
             )
 
             sub = SUBSIDY_2026.get((a.iata, b.iata))
@@ -260,6 +265,7 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
                 "subsidy_check": sub_check,
                 "rail_travel_hours": rail_h,
                 "rail_weak_competitor": rail_weak,
+                "rail_source": rail_src,
                 "rail_text": rail_txt,
                 "launch_quarter": _launch_quarter(own_weekly or 0, comp_weekly or 0),
                 "moscow_detour_ratio": round(detour, 2),
@@ -267,6 +273,7 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
                 "pax": int(round(pax)),
                 "freq": int(freq),
                 "competitor_share_origin_pct": a.competitor_share_pct,
+                "competitor_share_source": a.competitor_share_source,
                 "proof_source": proof,
             })
 
