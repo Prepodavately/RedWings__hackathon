@@ -56,6 +56,28 @@ FARE_FALLBACK = "медиана тарифов конкурентов по вс�
 SUBSIDY_SOURCE = "Росавиация, перечень 2026 (Сигнал Урал, 26.11.2025): https://signalural.ru/news/10457"
 SUBSIDY_2026_FROM_SVX = {"GOJ", "OMS", "VOG", "GSV"}  # из 12 городов ТЗ
 
+# Реальные номера рейсов Red Wings на парах, где компания уже летает (страницы расписания
+# biletdv.ru, неделя 09–15.11.2026). Для остальных пар код — заглушка.
+RW_FLIGHT_CODES = {
+    ("SVX", "UFA"): "WZ-1025", ("UFA", "SVX"): "WZ-1026",
+    ("SVX", "KUF"): "WZ-1033", ("KUF", "SVX"): "WZ-1034",
+    ("SVX", "KZN"): "WZ-1067", ("KZN", "SVX"): "WZ-1068",
+    ("SVX", "GOJ"): "WZ-5029", ("GOJ", "SVX"): "WZ-5030",
+    ("KUF", "GOJ"): "WZ-5343", ("GOJ", "KUF"): "WZ-5344",
+    ("SVX", "OMS"): "WZ-5071", ("OMS", "SVX"): "WZ-5072",
+    ("SVX", "GSV"): "WZ-5047", ("GSV", "SVX"): "WZ-5048",
+    ("KUF", "TJM"): "WZ-5305", ("TJM", "KUF"): "WZ-5306",
+}
+
+# Ж/д: минимальное время в пути (минуты), «Время в пути на поезде от …» на rasp.yandex.ru,
+# снято 09.11.2026. Пары без данных (KUF–MRV, MRV–VOG) — нет страницы на Яндекс.Расписаниях.
+RAIL_MIN_MINUTES = {
+    ("CEK", "SVX"): 240, ("GOJ", "KUF"): 668, ("GOJ", "KZN"): 492, ("GSV", "KUF"): 495,
+    ("KUF", "KZN"): 923, ("KUF", "SVX"): 1395, ("KUF", "UFA"): 457, ("KUF", "VOG"): 983,
+    ("PEE", "SVX"): 334, ("SVX", "TJM"): 267, ("SVX", "UFA"): 822,
+}
+RAIL_WEAK_THRESHOLD_H = 12  # ТЗ: rail_travel_hours >= 12 → rail_weak_competitor = True
+
 
 def build_cities_features() -> pd.DataFrame:
     return load_rosstat_and_rosaviatsia()
@@ -157,6 +179,17 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
                 if own_weekly:
                     proof_comp += f" Red Wings уже выполняет {own_weekly} рейс(ов)/нед на этой паре."
 
+            key = tuple(sorted((a.iata, b.iata)))
+            if key in RAIL_MIN_MINUTES:
+                rail_h = round(RAIL_MIN_MINUTES[key] / 60, 2)
+                rail_weak = bool(rail_h >= RAIL_WEAK_THRESHOLD_H)
+                rail_txt = (f"Ж/д: от {RAIL_MIN_MINUTES[key] // 60} ч {RAIL_MIN_MINUTES[key] % 60} мин "
+                            f"(Яндекс Расписания, мин. время в пути).")
+            else:
+                rail_h = None
+                rail_weak = None
+                rail_txt = "Ж/д: данных нет (Яндекс Расписания не нашёл пару)."
+
             proof = (
                 f"Пассажиропоток: аэропорт {a.iata} = {a.airport_pax_mln:.3f} млн пасс. в 2025 г. "
                 f"(data/raw/rosaviatsia_2025.csv) × {DEPARTURE_SHARE:.0%} вылетающих × "
@@ -166,7 +199,7 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
                 f"Red Wings берёт {RW_CAPTURE_BASE:.0%} (допущение) = {pax:,.0f} пасс./год. "
                 f"Частота: {pax / WEEKS_PER_YEAR:,.0f} пасс./нед ÷ ({SEATS_PER_AIRCRAFT} мест × "
                 f"{LOAD_FACTOR:.0%}) → {freq} рейс(ов)/нед. "
-                f"{proof_comp} "
+                f"{proof_comp} {rail_txt} "
                 f"Доля конкурентов в аэропорту {a.iata}: "
                 + (
                     f"{a.competitor_share_pct:.0f}% ({a.main_competitor}, data/raw/rosaviatsia_2025.csv)."
@@ -207,6 +240,9 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
                 "fare_source": fare_src,
                 "subsidy_eligible": sub_flag,
                 "subsidy_check": sub_check,
+                "rail_travel_hours": rail_h,
+                "rail_weak_competitor": rail_weak,
+                "rail_text": rail_txt,
                 "launch_quarter": _launch_quarter(own_weekly or 0, comp_weekly or 0),
                 "moscow_detour_ratio": round(detour, 2),
                 "market_pax_year": int(round(market)),
@@ -261,9 +297,16 @@ def get_network_routes(hypothesis: str, hub_iata: str = "KUF") -> pd.DataFrame:
     routes = routes.sort_values("pax", ascending=False).head(MAX_ROUTES).reset_index(drop=True)
 
     tag = "HUB" if hypothesis == "hub" else "P2P"
-    routes.insert(0, "route_code", [
-        f"RW-{tag}-{o}-{d}" for o, d in zip(routes["origin_iata"], routes["dest_iata"])
-    ])
+    codes, code_src = [], []
+    for o, d in zip(routes["origin_iata"], routes["dest_iata"]):
+        if (o, d) in RW_FLIGHT_CODES:
+            codes.append(RW_FLIGHT_CODES[(o, d)])
+            code_src.append("реальный номер Red Wings (biletdv.ru, 09–15.11.2026)")
+        else:
+            codes.append(f"RW-{tag}-{o}-{d}")
+            code_src.append("заглушка: Red Wings на этой паре не летает, номер назначит авиакомпания")
+    routes.insert(0, "route_code", codes)
+    routes.insert(1, "route_code_source", code_src)
 
     if len(routes) < MIN_ROUTES:
         warnings.warn(
