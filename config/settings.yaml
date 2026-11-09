@@ -1,0 +1,14 @@
+# Глобальные константы кейса Red Wings
+market:
+  rf_total_passengers_2025: 108900000
+  red_wings_base_passengers_2025: 4465000
+
+fleet:
+  aircraft_model: "SJ-100"
+  default_seats: 100
+  delivery_shift_period: "2027-H2"
+
+network:
+  min_routes: 8
+  max_routes: 12
+  default_routes: 10

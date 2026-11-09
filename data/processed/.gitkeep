@@ -1,0 +1,3 @@
+# Сюда скрипт src/parsers/build_dataset.py (Dev 1) сохраняет:
+# - cities_features.parquet
+# - routes_proof.parquet

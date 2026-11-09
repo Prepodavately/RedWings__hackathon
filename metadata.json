@@ -1,0 +1,6 @@
+{
+  "name": "Red Wings Network Strategy & Architecture",
+  "description": "Интерактивная data-driven система стратегического планирования маршрутной сети Red Wings (скоринг городов, юнит-экономика SJ-100, карта маршрутов и архитектура командного репозитория).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

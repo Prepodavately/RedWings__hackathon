@@ -1,0 +1,6 @@
+{
+  "w_population": 0.30,
+  "w_hub_distance": 0.20,
+  "w_competitor_gap": 0.30,
+  "w_tourism_demand": 0.20
+}
