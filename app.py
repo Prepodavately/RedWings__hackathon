@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from src.ui.sidebar_controls import render_sidebar_controls
-from src.ui.kpi_cards import render_comparison_kpis
+from src.ui.kpi_cards import render_comparison_kpis, render_strategy_heatmap
 from src.ui.map_renderer import render_route_network_map
 from src.ui.roadmap_chart import render_sj100_roadmap
 from src.ui.provider_bridge import get_providers, load_comparison, load_routes, ProviderNotReady
@@ -23,7 +23,7 @@ def main():
     if mode not in {'0','1'}:st.error('USE_MOCKS должен быть 0 или 1.');return
     use_mocks=mode=='1'
     if use_mocks:
-        st.warning('USE_MOCKS=1 · Заглушки команды возвращают постоянные числа. Ползунки передаются провайдеру, но текущие заглушки их игнорируют. Это демонстрация интерфейса, не проверенный бизнес-расчёт.')
+        st.warning('USE_MOCKS=1 · Интерактивные синтетические данные: 12 городов и условная экономика по формулам командного ТЗ. Это проверка интерфейса, не доказательство спроса и не прогноз.')
     else:st.info('USE_MOCKS=0 · Подключены модули Dev 1–3. Интерфейс не подменяет их результаты демонстрационными.')
     weights,params=render_sidebar_controls()
     try:
@@ -41,6 +41,17 @@ def main():
         routes=None
         try:
             routes=load_routes(network,selected,params.hub_iata)
+            if not use_mocks:
+                try:
+                    from src.parsers.rosstat_loader import load_rosstat_and_rosaviatsia
+                    features=load_rosstat_and_rosaviatsia()
+                    if isinstance(features,pd.DataFrame) and {'iata','lat','lon'} <= set(features.columns):
+                        valid=features.dropna(subset=['lat','lon'])
+                        valid=valid[valid.lat.between(-90,90)&valid.lon.between(-180,180)]
+                        routes.attrs['city_coordinates']={r.iata:(r.lon,r.lat) for r in valid.itertuples()}
+                except Exception as exc:st.warning(f'Слой всех кандидатов недоступен: {exc}')
+            st.caption(f'В модели: {params.active_routes_count} маршрутов; провайдер сети вернул {len(routes)}. Таблица не обрезается автоматически: get_network_routes не принимает число маршрутов.')
+            routes['proposed_base_fare_rub']=params.avg_fare_rub
             render_route_network_map(routes,cities,use_mocks=use_mocks)
         except Exception as exc:st.error(f'Маршруты недоступны: {exc}')
     with tabs[1]:
@@ -57,7 +68,7 @@ def main():
         st.caption('Интерфейс не меняет баллы, места и флаг is_top3. За расчёт рейтинга отвечает провайдер.')
     with tabs[2]:
         st.subheader('Сравнение обоих сценариев')
-        st.caption('Для каждого сценария вызывается evaluate_hypotheses с теми же параметрами и соответствующим scenario. В текущих заглушках ответы совпадают.')
+        st.caption('Для каждого сценария вызывается evaluate_hypotheses с теми же параметрами и соответствующим scenario. Демо использует условные коэффициенты; реальные результаты предоставляет Dev 3.')
         try:
             bundles={scenario:load_comparison(scoring,economics,weights,replace(params,scenario=scenario))[1] for scenario in ['base','conservative']}
             rows=[]
@@ -73,6 +84,7 @@ def main():
             _,alternative=load_comparison(scoring,economics,weights,replace(params,load_factor_pct=test_load))
             st.dataframe(pd.DataFrame([{'Стратегия':base.title,'Текущая выручка, млн ₽':base.annual_revenue_mln_rub,'При тестовой загрузке, млн ₽':alt.annual_revenue_mln_rub,'Разница, млн ₽':alt.annual_revenue_mln_rub-base.annual_revenue_mln_rub} for base,alt in [(comparison.hub,alternative.hub),(comparison.p2p,alternative.p2p)]]),hide_index=True,use_container_width=True)
         except Exception as exc:st.error(f'Проверка загрузки недоступна: {exc}')
+        render_strategy_heatmap(economics, params, [c for c in cities if c.is_top3])
     with tabs[3]:
         st.subheader('Переданные параметры')
         payload={'use_mocks':use_mocks,'weights':asdict(weights),'financial_input':asdict(params)}
@@ -80,12 +92,12 @@ def main():
         st.download_button('Скачать параметры · JSON',json.dumps(payload,ensure_ascii=False,indent=2),'parameters.json','application/json')
         st.subheader('Проверяемость данных')
         if routes is not None:
-            for field in ['source','method']:
+            for field in ['proof_source']:
                 if field not in routes.columns:st.warning(f'В таблице нет поля {field}. Для защиты по каждому маршруту нужны источник и/или метод оценки пассажиров и частоты.')
             st.dataframe(routes,hide_index=True,use_container_width=True)
         st.markdown('''Перед защитой команда должна согласовать:
-- единицы `weekly_freq_per_route` и `freq`: вылеты или обороты;
-- единицу `market_share_delta_pct`: проценты или процентные пункты;
+- по ТЗ `weekly_freq_per_route` — парные обороты; себестоимость в модели должна использовать согласованную единицу рейса;
+- `market_share_delta_pct` по формуле ТЗ отображается в процентных пунктах;
 - период и направление учёта `pax`, правила учёта пересадочных пассажиров;
 - источники и методы оценок для каждого маршрута;
 - реальный расчёт флота, стыковок и расписания.

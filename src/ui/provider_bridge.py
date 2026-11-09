@@ -32,5 +32,6 @@ def load_comparison(scoring,economics,weights,params):
 def load_routes(provider,hypothesis,hub_iata):
     routes=provider(hypothesis,hub_iata)
     if not isinstance(routes,pd.DataFrame):raise ProviderNotReady('Dev 1: get_network_routes должен вернуть DataFrame. Модуль маршрутов пока не готов.')
+    routes = routes.rename(columns={k:v for k,v in {'origin_iata':'origin','dest_iata':'dest','lat_o':'origin_lat','lon_o':'origin_lon','lat_d':'dest_lat','lon_d':'dest_lon'}.items() if k in routes and v not in routes}).copy()
     if not {'origin','dest'}<=set(routes.columns):raise ProviderNotReady('Dev 1: в таблице маршрутов нужны origin и dest.')
     return routes
