@@ -37,6 +37,13 @@ CITIES_PATH = PROCESSED_DIR / "cities_features.parquet"
 ROUTES_PATH = PROCESSED_DIR / "routes_proof.parquet"
 
 HYPOTHESES = ("hub", "p2p")
+
+# ТЗ, «Важная деталь для get_network_routes»: прямые межрегиональные пары для hypothesis="p2p"
+P2P_PAIRS = [
+    ("KUF", "GOJ"), ("KUF", "PEE"), ("GOJ", "UFA"), ("GOJ", "MRV"), ("UFA", "VOG"),
+    ("KUF", "CEK"), ("UFA", "OMS"), ("GOJ", "SVX"), ("KZN", "CEK"), ("GSV", "SVX"),
+]
+HUB_RAYS = 10  # ТЗ: веер из хаба, «все 10 лучей вылетают из hub_iata»
 MAX_ROUTES = 12                # ТЗ: 10–12 маршрутов
 MIN_ROUTES = 10                # ТЗ: минимум 10
 
@@ -94,11 +101,15 @@ RW_FLIGHT_CODES = {
 }
 
 # Ж/д: минимальное время в пути (минуты), «Время в пути на поезде от …» на rasp.yandex.ru,
-# снято 09.11.2026. Пары без данных (KUF–MRV, MRV–VOG) — нет страницы на Яндекс.Расписаниях.
+# снято 09.11.2026. Для остальных пар — оценка по расстоянию (помечается в rail_source):
+# Минеральных Вод нет на Яндекс.Расписаниях, часть пар не измерялась.
 RAIL_MIN_MINUTES = {
     ("CEK", "SVX"): 240, ("GOJ", "KUF"): 668, ("GOJ", "KZN"): 492, ("GSV", "KUF"): 495,
     ("KUF", "KZN"): 923, ("KUF", "SVX"): 1395, ("KUF", "UFA"): 457, ("KUF", "VOG"): 983,
     ("PEE", "SVX"): 334, ("SVX", "TJM"): 267, ("SVX", "UFA"): 822,
+    ("KUF", "PEE"): 1800, ("GOJ", "UFA"): 1560, ("UFA", "VOG"): 1560, ("CEK", "KUF"): 1012,
+    ("OMS", "UFA"): 1327, ("GOJ", "SVX"): 1174, ("CEK", "KZN"): 1300, ("GSV", "SVX"): 1800,
+    ("KUF", "TJM"): 1560,
 }
 RAIL_WEAK_THRESHOLD_H = 12  # ТЗ: rail_travel_hours >= 12 → rail_weak_competitor = True
 
@@ -223,6 +234,9 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
             rail_weak = bool(rail_h >= RAIL_WEAK_THRESHOLD_H)
 
             proof = (
+                f"Росстат: {a.population_mln + b.population_mln:.2f} млн чел. в 2 агломерациях "
+                f"({a.city_name} {a.population_mln:.2f} + {b.city_name} {b.population_mln:.2f}); "
+                f"прямых авиарейсов конкурентов {comp_weekly}/нед. "
                 f"Пассажиропоток: аэропорт {a.iata} = {a.airport_pax_mln:.3f} млн пасс. в 2025 г. "
                 f"(data/raw/rosaviatsia_2025.csv) × {DEPARTURE_SHARE:.0%} вылетающих × "
                 f"{CORE_SHARE:.0%} в города набора (допущение) × гравитация на {b.iata}: "
@@ -278,9 +292,8 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
             })
 
     df = pd.DataFrame(rows)
-    int_cols = ["competitor_flights_weekly", "own_flights_weekly", "competitor_fare_rub"]
-    for c in int_cols:
-        df[c] = df[c].astype("Int64")
+    for c in ["competitor_flights_weekly", "own_flights_weekly", "competitor_fare_rub"]:
+        df[c] = df[c].astype("int64")
     df["subsidy_eligible"] = df["subsidy_eligible"].astype(bool)
     return df
 
@@ -314,12 +327,17 @@ def get_network_routes(hypothesis: str, hub_iata: str = "KUF") -> pd.DataFrame:
         build_processed_tables()
     routes = pd.read_parquet(ROUTES_PATH)
 
-    if hypothesis == "hub":
+    if hypothesis == "p2p":
+        order = {pair: i for i, pair in enumerate(P2P_PAIRS)}
+        keys = list(zip(routes["origin_iata"], routes["dest_iata"]))
+        routes = routes[[k in order for k in keys]].copy()
+        routes["_order"] = [order[k] for k in zip(routes["origin_iata"], routes["dest_iata"])]
+        routes = routes.sort_values("_order").drop(columns="_order").reset_index(drop=True)
+    else:
         if hub_iata not in TZ_CITIES:
             raise ValueError(f"Хаб {hub_iata} не входит в 12 городов ТЗ: {TZ_CITIES}")
-        routes = routes[(routes["origin_iata"] == hub_iata) | (routes["dest_iata"] == hub_iata)]
-
-    routes = routes.sort_values("pax", ascending=False).head(MAX_ROUTES).reset_index(drop=True)
+        routes = routes[routes["origin_iata"] == hub_iata]
+        routes = routes.sort_values("pax", ascending=False).head(HUB_RAYS).reset_index(drop=True)
 
     tag = "HUB" if hypothesis == "hub" else "P2P"
     codes, code_src = [], []
