@@ -17,7 +17,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Dev 2: скоринг 10+ городов с аудитом и чувствительностью")
     parser.add_argument("--input", type=Path, default=DEFAULT_DATA_PATH)
     parser.add_argument("--output", type=Path, default=Path("work/scoring"))
-    parser.add_argument("--mode", choices=["case", "exploratory"], default="case")
+    parser.add_argument("--mode", choices=["auto", "case", "exploratory"], default="auto")
     parser.add_argument("--hypothesis", choices=["hub", "p2p"], default="hub")
     parser.add_argument("--weights-json", type=Path, help="JSON с четырьмя полями ScoringWeights")
     parser.add_argument("--moscow-transfer-weight", type=float, default=0.20)
@@ -39,7 +39,9 @@ def main() -> int:
                         ("data_audit", result.audit), ("weight_sensitivity", sensitivity)):
         table.to_csv(args.output / f"{name}.csv", index=False, encoding="utf-8-sig")
     metadata = {
-        "mode": result.mode, "hypothesis": result.hypothesis,
+        "requested_mode": args.mode, "mode": result.mode, "hypothesis": result.hypothesis,
+        "distance_scoring": {"input": "dist_to_mow_km", "optimal_km": 1150.0,
+                             "formula": "max(35, 100 - 65 * abs(d - 1150) / 1200)"},
         "input_file": args.input.name,
         "input_sha256": hashlib.sha256(args.input.read_bytes()).hexdigest(),
         "created_at_utc": datetime.now(timezone.utc).isoformat(),

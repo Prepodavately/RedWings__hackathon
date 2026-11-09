@@ -1,9 +1,15 @@
 {
+  "requested_mode": "auto",
   "mode": "exploratory",
   "hypothesis": "p2p",
+  "distance_scoring": {
+    "input": "dist_to_mow_km",
+    "optimal_km": 1150.0,
+    "formula": "max(35, 100 - 65 * abs(d - 1150) / 1200)"
+  },
   "input_file": "dev1_e364ac7.csv",
   "input_sha256": "621e387cf9faaf38c272844af49c2c899ddf5264fb3581500f40ad5e77f9a8a2",
-  "created_at_utc": "2026-11-09T17:05:55.011884+00:00",
+  "created_at_utc": "2026-11-09T19:30:43.625075+00:00",
   "requested_weights": {
     "w_population": 0.3,
     "w_hub_distance": 0.2,
@@ -22,8 +28,8 @@
       2.096344
     ],
     "hub_distance": [
-      0.0,
-      1339.0
+      35.0,
+      100.0
     ],
     "competitor_gap": [
       0.0,
@@ -46,7 +52,9 @@
     "Источники записаны поставщиком данных; наличие ссылки не означает внешнюю проверку.",
     "ПРЕДВАРИТЕЛЬНО: доля пассажиров с пересадкой в Москве не участвует в формуле.",
     "Происхождение, сопоставимость периодов и возможности аэропортов требуют проверки.",
-    "tourism_demand_score и competitor_gap_score используются в определении Dev 1; проверьте прокси."
+    "tourism_demand_score и competitor_gap_score используются в определении Dev 1; проверьте прокси.",
+    "Предварительный рейтинг: auto выбрал exploratory; нет полей для case: airport_feasible, method_airport_feasibility, method_airport_pax, method_competitor_gap, method_hub_distance, method_moscow_transfer, method_population, method_tourism_demand, moscow_transfer_share_pct, period_airport_feasibility, period_airport_pax, period_competitor_gap, period_hub_distance, period_moscow_transfer, period_population, period_tourism_demand, src_airport_feasibility, src_competitor_gap, src_hub_distance, src_moscow_transfer, src_tourism_demand, status_airport_feasibility, status_airport_pax, status_competitor_gap, status_hub_distance, status_moscow_transfer, status_population, status_tourism_demand. Используются четыре критерия; покажите этот статус в интерфейсе.",
+    "Расстояние: max(35, 100 - 65 * |dist_to_mow_km - 1150| / 1200), эвристика команды."
   ],
   "cutoff_tie": false
 }

@@ -12,7 +12,7 @@ from src.scoring.city_scorer import (
     METRICS, effective_weights, get_scored_cities, prepare_features,
     score_cities, weight_sensitivity,
 )
-from src.scoring.normalizer import min_max_normalize
+from src.scoring.normalizer import distance_sweet_spot_score, min_max_normalize
 
 
 @pytest.fixture
@@ -108,7 +108,7 @@ def test_bad_inputs(complete, problem):
 def test_case_missing_transfer_never_silent_fallback(complete):
     df = complete.drop(columns="moscow_transfer_share_pct")
     with pytest.raises(ValueError, match="moscow_transfer_share_pct"):
-        score_cities(df)
+        score_cities(df, mode="case")
     result = score_cities(df, mode="exploratory")
     assert result.table.result_status.eq("preliminary").all()
     assert "moscow_transfer" not in result.weights
@@ -187,7 +187,7 @@ def test_reference_snapshot_is_honestly_preliminary():
     assert result.top3.result_status.eq("preliminary").all()
     assert len(result.audit) == len(data) * len(METRICS)
     with pytest.raises(ValueError, match="moscow_transfer_share_pct"):
-        score_cities(data)
+        score_cities(data, mode="case")
 
 
 def test_cli_exports_auditable_files(complete, tmp_path, monkeypatch):
@@ -208,8 +208,119 @@ def test_cli_rejects_missing_data_before_export(complete, tmp_path, monkeypatch)
     from src.scoring.__main__ import main
     input_path, output = tmp_path / "input.csv", tmp_path / "results"
     complete.drop(columns="moscow_transfer_share_pct").to_csv(input_path, index=False)
-    monkeypatch.setattr(sys, "argv", ["scoring", "--input", str(input_path), "--output", str(output)])
+    monkeypatch.setattr(sys, "argv", ["scoring", "--input", str(input_path), "--output", str(output),
+                                    "--mode", "case"])
     with pytest.raises(SystemExit) as error:
         main()
     assert error.value.code == 2
     assert not output.exists()
+
+
+def test_distance_sweet_spot_rewards_optimum_and_penalizes_tails():
+    source = pd.Series([350.0, 800.0, 1150.0, 1500.0, 2100.0, 10000.0],
+                       index=list("abcdef"), name="distance")
+    scores = distance_sweet_spot_score(source)
+    assert scores.idxmax() == "c"
+    assert scores.loc["c"] == 100
+    assert scores.loc["b"] == pytest.approx(scores.loc["d"])
+    assert scores.loc["a"] < scores.loc["b"] < scores.loc["c"]
+    assert scores.loc["e"] < scores.loc["d"] < scores.loc["c"]
+    assert scores.loc["f"] == 35
+    assert scores.index.equals(source.index)
+    assert scores.name == source.name
+    assert distance_sweet_spot_score(pd.Series([600]), optimal_km=600).iloc[0] == 100
+
+
+@pytest.mark.parametrize("values", [[], [-1], [np.nan], [np.inf], ["bad"]])
+def test_distance_sweet_spot_rejects_invalid_distances(values):
+    with pytest.raises(ValueError):
+        distance_sweet_spot_score(pd.Series(values))
+
+
+@pytest.mark.parametrize("optimum", [0, -1, np.nan, np.inf, "bad", True])
+def test_distance_sweet_spot_rejects_invalid_optimum(optimum):
+    with pytest.raises(ValueError):
+        distance_sweet_spot_score(pd.Series([100]), optimum)
+
+
+@pytest.mark.parametrize("column", ["moscow_transfer_share_pct", "airport_feasible", "src_population"])
+def test_auto_falls_back_on_missing_case_columns(complete, column):
+    with pytest.warns(UserWarning, match="auto выбрал exploratory"):
+        result = score_cities(complete.drop(columns=column))
+    assert result.mode == "exploratory"
+    assert set(result.weights) == {"population", "hub_distance", "competitor_gap", "tourism_demand"}
+    assert result.table.result_status.eq("preliminary").all()
+    assert any(column in text for text in result.limitations)
+
+
+def test_auto_does_not_hide_invalid_complete_data(complete):
+    complete.loc[0, "moscow_transfer_share_pct"] = 101
+    with pytest.raises(ValueError, match="диапазона"):
+        score_cities(complete)
+
+
+def test_default_api_reads_dev1_parquet_and_keeps_all_cities(tmp_path):
+    from src.scoring.city_scorer import load_features
+    data = load_features(Path(__file__).resolve().parents[1] / "reference/dev1_e364ac7.csv")
+    path = tmp_path / "cities_features.parquet"
+    data.to_parquet(path, index=False)
+    with pytest.warns(UserWarning, match="auto выбрал exploratory"):
+        rows = get_scored_cities(ScoringWeights(), path=path)
+    assert len(rows) == 12
+    assert {c.iata for c in rows} == set(data.iata)
+    assert "SVX" in {c.iata for c in rows}
+    assert sum(c.is_top3 for c in rows) == 3
+    assert [c.rank for c in rows] == list(range(1, 13))
+    for city in rows:
+        for field in ("total_score", "population_mln", "airport_pax_mln"):
+            value = getattr(city, field)
+            assert value == round(value, 2)
+
+
+def test_explicit_hub_api_keeps_svx_for_map_but_not_top3(complete):
+    complete.loc[0, "iata"] = "SVX"
+    rows = get_scored_cities(ScoringWeights(), data=complete, hypothesis="hub")
+    assert len(rows) == len(complete)
+    svx = next(c for c in rows if c.iata == "SVX")
+    assert not svx.is_top3
+    assert svx.rank == len(rows)
+    assert sum(c.is_top3 for c in rows) == 3
+
+
+def test_minimal_base_schema_does_not_require_coordinates_or_svx(complete):
+    base = complete[["iata", "city_name", "region", "population_mln", "airport_pax_mln",
+                     "dist_to_mow_km", "competitor_gap_score", "tourism_demand_score"]]
+    with pytest.warns(UserWarning):
+        rows = get_scored_cities(ScoringWeights(), data=base)
+    assert len(rows) == len(base)
+
+
+def test_distance_score_does_not_depend_on_svx_proximity(complete):
+    before = score_cities(complete).table.set_index("iata")
+    complete["dist_to_svx_km"] = 0
+    after = score_cities(complete).table.set_index("iata")
+    pd.testing.assert_series_equal(before.score_hub_distance, after.score_hub_distance)
+
+
+def test_dto_rounding_does_not_change_order(complete):
+    complete["tourism_demand_score"] = 50.0
+    complete.loc[11, "tourism_demand_score"] = 50.001
+    weights = ScoringWeights(0, 0, 0, 1)
+    with pytest.warns(UserWarning):
+        rows = get_scored_cities(weights, data=complete, mode="exploratory")
+    assert all(c.total_score == 50 for c in rows)
+    assert rows[0].iata == "AAL"
+    assert rows[0].rank == 1
+
+
+def test_cli_auto_exports_actual_selected_mode(complete, tmp_path, monkeypatch):
+    from src.scoring.__main__ import main
+    path, output = tmp_path / "input.csv", tmp_path / "results"
+    complete.drop(columns="moscow_transfer_share_pct").to_csv(path, index=False)
+    monkeypatch.setattr(sys, "argv", ["scoring", "--input", str(path), "--output", str(output), "--samples", "20"])
+    with pytest.warns(UserWarning, match="auto выбрал exploratory"):
+        assert main() == 0
+    metadata = json.loads((output / "run_metadata.json").read_text())
+    assert metadata["requested_mode"] == "auto"
+    assert metadata["mode"] == "exploratory"
+    assert metadata["distance_scoring"]["input"] == "dist_to_mow_km"

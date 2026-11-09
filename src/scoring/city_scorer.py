@@ -1,4 +1,4 @@
-"""Скоринг Dev 2: полный режим case и явно предварительный exploratory.
+"""Скоринг Dev 2: auto выбирает case или предварительный exploratory.
 
 Общий контракт сохранён. Пятый вес задаёт moscow_transfer_weight.
 """
@@ -13,15 +13,16 @@ import numpy as np
 import pandas as pd
 
 from src.schemas.contracts import CityScoreDTO, ScoringWeights
-from src.scoring.normalizer import min_max_normalize
+from src.scoring.normalizer import distance_sweet_spot_score, min_max_normalize
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_PATH = PROJECT_ROOT / "data/processed/cities_features.parquet"
-Mode = Literal["case", "exploratory"]
+Mode = Literal["auto", "case", "exploratory"]
+ResolvedMode = Literal["case", "exploratory"]
 BASE_CRITERIA = ("population", "hub_distance", "competitor_gap", "tourism_demand")
 METRICS = {
     "population": "population_mln",
-    "hub_distance": "distance_to_nearest_hub_km",
+    "hub_distance": "dist_to_mow_km",
     "competitor_gap": "competitor_gap_score",
     "tourism_demand": "tourism_demand_score",
     "moscow_transfer": "moscow_transfer_share_pct",
@@ -29,6 +30,11 @@ METRICS = {
     "airport_feasibility": "airport_feasible",
 }
 REFERENCE_HUBS = frozenset({"MOW", "SVO", "DME", "VKO", "ZIA", "SVX"})
+CASE_REQUIRED_COLUMNS = frozenset(
+    {"moscow_transfer_share_pct", "airport_feasible"}
+    | {f"{prefix}_{criterion}" for criterion in METRICS
+       for prefix in ("src", "status", "period", "method")}
+)
 
 
 @dataclass
@@ -90,11 +96,11 @@ def _feasible(value: object) -> bool | None:
 
 
 def prepare_features(features: pd.DataFrame) -> pd.DataFrame:
-    """10+ кандидатов; удалённость = min(до Москвы, до SVX).
+    """10+ кандидатов; для скоринга достаточно dist_to_mow_km от Dev 1.
 
-    dist_to_mow_km приходит от Dev 1. dist_to_svx_km либо поступает явно,
-    либо рассчитывается по lat/lon до координат строки SVX в той же витрине.
-    Это признак скрининга, а не дальность будущего рейса А→Б.
+    Дополнительные расстояния до SVX/ближайшего узла сохраняются для анализа,
+    если они переданы либо есть координаты со строкой SVX. Они не участвуют
+    в балле расстояния. Это признаки скрининга, не длина будущего рейса А→Б.
     """
     df = features.copy(deep=True).reset_index(drop=True)
     for col in ("iata", "city_name", "region"):
@@ -113,18 +119,17 @@ def prepare_features(features: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("population_mln должен быть положительным")
     for col in ("competitor_gap_score", "tourism_demand_score"):
         _number_column(df, col, 0, 100)
-    if "dist_to_svx_km" not in df:
+    if "dist_to_svx_km" not in df and {"lat", "lon"} <= set(df.columns) and df["iata"].eq("SVX").any():
         for col, low, high in (("lat", -90, 90), ("lon", -180, 180)):
             _number_column(df, col, low, high)
         anchor = df.loc[df["iata"].eq("SVX")]
-        if anchor.empty:
-            raise ValueError("Нужен dist_to_svx_km или строка SVX с координатами")
         lat, lon = np.radians(df["lat"].to_numpy()), np.radians(df["lon"].to_numpy())
         lat0, lon0 = np.radians(anchor.iloc[0][["lat", "lon"]].to_numpy(dtype=float))
         a = np.sin((lat - lat0) / 2) ** 2 + np.cos(lat) * np.cos(lat0) * np.sin((lon - lon0) / 2) ** 2
         df["dist_to_svx_km"] = 2 * 6371.0 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
-    _number_column(df, "dist_to_svx_km", 0)
-    df["distance_to_nearest_hub_km"] = df[["dist_to_mow_km", "dist_to_svx_km"]].min(axis=1)
+    if "dist_to_svx_km" in df:
+        _number_column(df, "dist_to_svx_km", 0)
+        df["distance_to_nearest_hub_km"] = df[["dist_to_mow_km", "dist_to_svx_km"]].min(axis=1)
     if "airport_feasible" not in df:
         df["airport_feasible"] = None
     df["airport_feasible"] = df["airport_feasible"].map(_feasible)
@@ -176,7 +181,7 @@ def _validate_case(df: pd.DataFrame, audit: pd.DataFrame) -> None:
         raise ValueError("Полный расчёт case невозможен:\n- " + "\n- ".join(errors))
 
 
-def effective_weights(weights: ScoringWeights, *, mode: Mode,
+def effective_weights(weights: ScoringWeights, *, mode: ResolvedMode,
                       moscow_transfer_weight: float = 0.20) -> dict[str, float]:
     if mode not in {"case", "exploratory"}:
         raise ValueError("mode должен быть case или exploratory")
@@ -196,23 +201,44 @@ def effective_weights(weights: ScoringWeights, *, mode: Mode,
     return result
 
 
+def _resolve_mode(features: pd.DataFrame, mode: Mode) -> tuple[ResolvedMode, str | None]:
+    if mode not in {"auto", "case", "exploratory"}:
+        raise ValueError("mode должен быть auto, case или exploratory")
+    if mode != "auto":
+        return mode, None
+    missing = sorted(CASE_REQUIRED_COLUMNS - set(features.columns))
+    if not missing:
+        return "case", None
+    reason = (
+        "Предварительный рейтинг: auto выбрал exploratory; нет полей для case: "
+        + ", ".join(missing)
+        + ". Используются четыре критерия; покажите этот статус в интерфейсе."
+    )
+    return "exploratory", reason
+
+
 def score_cities(features: pd.DataFrame, weights: ScoringWeights | None = None, *,
-                 mode: Mode = "case", hypothesis: str = "hub",
+                 mode: Mode = "auto", hypothesis: str = "hub",
                  moscow_transfer_weight: float = 0.20) -> ScoringResult:
     """Возвращает рейтинг, вклады критериев, аудит и ограничения.
 
-    case: пять критериев, источники, методы, периоды, airport_feasible.
+    auto (по умолчанию): case при полной схеме, иначе exploratory с предупреждением.
+    При полной схеме некорректные значения не маскируются сменой режима.
+    Явный case: пять критериев, источники, методы, периоды, airport_feasible.
     exploratory: четыре имеющихся критерия; результат предварительный.
     Для нового хаба опорные Мск/Екб исключаются, для p2p могут быть концами маршрута.
     """
     if hypothesis not in {"hub", "p2p"}:
         raise ValueError("hypothesis должен быть hub или p2p")
+    mode, auto_reason = _resolve_mode(features, mode)
     weight_map = effective_weights(weights or ScoringWeights(), mode=mode,
                                    moscow_transfer_weight=moscow_transfer_weight)
     df = prepare_features(features)
     audit = audit_features(df)
     if mode == "case":
         _validate_case(df, audit)
+    if auto_reason:
+        warnings.warn(auto_reason, UserWarning, stacklevel=2)
     limits = [
         "Веса — экспертное предположение; результат условен относительно данных и критериев.",
         "Рейтинг городов не доказывает спрос, прибыльность маршрутов или победу гипотезы.",
@@ -224,12 +250,18 @@ def score_cities(features: pd.DataFrame, weights: ScoringWeights | None = None, 
             "Происхождение, сопоставимость периодов и возможности аэропортов требуют проверки.",
             "tourism_demand_score и competitor_gap_score используются в определении Dev 1; проверьте прокси.",
         ]
+    if auto_reason:
+        limits.append(auto_reason)
+    limits.append("Расстояние: max(35, 100 - 65 * |dist_to_mow_km - 1150| / 1200), эвристика команды.")
     bounds = {}
     for criterion in weight_map:
         column = METRICS[criterion]
-        if criterion in {"population", "hub_distance"}:
+        if criterion == "population":
             df[f"score_{criterion}"] = min_max_normalize(df[column])
             bounds[criterion] = [float(df[column].min()), float(df[column].max())]
+        elif criterion == "hub_distance":
+            df[f"score_{criterion}"] = distance_sweet_spot_score(df[column])
+            bounds[criterion] = [35.0, 100.0]
         else:
             df[f"score_{criterion}"] = df[column]
             bounds[criterion] = [0.0, 100.0]
@@ -256,9 +288,15 @@ def score_cities(features: pd.DataFrame, weights: ScoringWeights | None = None, 
 
 
 def get_scored_cities(weights: ScoringWeights, *, data: pd.DataFrame | None = None,
-                      path: str | Path = DEFAULT_DATA_PATH, mode: Mode = "case",
-                      hypothesis: str = "hub", moscow_transfer_weight: float = 0.20) -> list[CityScoreDTO]:
-    """Совместимый API Dev 4. Для аудита/подписей используйте score_cities."""
+                      path: str | Path = DEFAULT_DATA_PATH, mode: Mode = "auto",
+                      hypothesis: str = "p2p", moscow_transfer_weight: float = 0.20) -> list[CityScoreDTO]:
+    """API Dev 4: полный список DTO, включая SVX; выбор нового хаба — явный hub.
+
+    В отличие от аналитического score_cities, по умолчанию p2p для полного
+    списка городов карты/селектора. is_top3 по-прежнему отражает допустимость
+    выбранной гипотезы. rank в DTO — позиция в полном списке, в том числе
+    для исключённых строк; причины исключений доступны через score_cities.
+    """
     result = score_cities(load_features(path) if data is None else data, weights,
                           mode=mode, hypothesis=hypothesis,
                           moscow_transfer_weight=moscow_transfer_weight)
@@ -267,9 +305,10 @@ def get_scored_cities(weights: ScoringWeights, *, data: pd.DataFrame | None = No
                       UserWarning, stacklevel=2)
     return [CityScoreDTO(
         iata=row.iata, city_name=row.city_name, region=row.region,
-        population_mln=row.population_mln, airport_pax_mln=row.airport_pax_mln,
-        total_score=float(row.total_score), rank=int(row.rank), is_top3=bool(row.is_top3),
-    ) for row in result.table.loc[result.table["eligible"]].itertuples()]
+        population_mln=round(float(row.population_mln), 2),
+        airport_pax_mln=round(float(row.airport_pax_mln), 2),
+        total_score=round(float(row.total_score), 2), rank=position, is_top3=bool(row.is_top3),
+    ) for position, row in enumerate(result.table.itertuples(), start=1)]
 
 
 def weight_sensitivity(result: ScoringResult, *, n_samples: int = 2000,
