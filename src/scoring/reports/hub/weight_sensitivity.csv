@@ -1,4 +1,4 @@
-﻿iata,city_name,rank,result_status,top3_frequency,best_rank,worst_rank,mean_rank,n_samples
+iata,city_name,rank,result_status,top3_frequency,best_rank,worst_rank,mean_rank,n_samples
 KUF,Самара,1,preliminary,1.0,1,1,1.0,2000
 KZN,Казань,2,preliminary,1.0,2,2,2.0,2000
 UFA,Уфа,3,preliminary,1.0,3,3,3.0,2000

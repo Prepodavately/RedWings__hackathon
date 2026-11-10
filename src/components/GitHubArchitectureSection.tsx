@@ -5,7 +5,12 @@ import {
   TEAM_WORKFLOW_ROLES,
   RepoFileSpec,
 } from '../utils/repoArchitecture';
-import { Copy, Check, FolderTree, Code2, Users, GitBranch } from 'lucide-react';
+import {
+  FULL_TEAM_TZ_MARKDOWN,
+  downloadFile,
+  downloadTeamTzWordDoc,
+} from '../utils/tzDocument';
+import { Copy, Check, FolderTree, Download } from 'lucide-react';
 
 export const GitHubArchitectureSection: React.FC = () => {
   const [selectedFilePath, setSelectedFilePath] = useState<string>(REPO_FILES[0].path);
@@ -48,15 +53,7 @@ export const GitHubArchitectureSection: React.FC = () => {
       'echo "Каркас репозитория Red Wings успешно создан!"',
     ].join('\n');
 
-    const blob = new Blob([scriptLines], { type: 'text/x-shellscript;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'init_redwings_repo.sh';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadFile(scriptLines, 'init_redwings_repo.sh', 'text/x-shellscript;charset=utf-8');
   };
 
   return (
@@ -65,20 +62,44 @@ export const GitHubArchitectureSection: React.FC = () => {
       <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 className="text-lg font-bold text-slate-900">
-            Архитектура GitHub-репозитория и контракты API (Команда 4+1 ПМИ)
+            Архитектура GitHub-репозитория и подробное ТЗ команды (4+1 ПМИ)
           </h2>
           <p className="text-sm text-slate-600 mt-0.5">
-            Все файлы-заготовки уже созданы в корне проекта — также можно скачать скрипт генерации структуры одной кнопкой
+            Скачайте полное пошаговое ТЗ для всех 4 разработчиков в формате Markdown (.md) или Word (.doc)
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() =>
+              downloadFile(
+                FULL_TEAM_TZ_MARKDOWN,
+                'TZ_KOMANDY_RED_WINGS.md',
+                'text/markdown;charset=utf-8'
+              )
+            }
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Скачать ТЗ (.md)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={downloadTeamTzWordDoc}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Скачать ТЗ в Word (.doc)</span>
+          </button>
+
           <button
             type="button"
             onClick={handleDownloadBootstrapScript}
-            className="px-3 py-1.5 text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="px-3 py-1.5 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
-            Скачать скрипт генерации папок (.sh)
+            Скрипт папок (.sh)
           </button>
 
           <div

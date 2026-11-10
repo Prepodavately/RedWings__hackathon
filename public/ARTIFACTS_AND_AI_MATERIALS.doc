@@ -1,0 +1,112 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+      xmlns:w="urn:schemas-microsoft-com:office:word"
+      xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="utf-8">
+<title>Артефакты и презентация — Кейс №5 Red Wings (Т1)</title>
+<style>
+  @page { size: A4; margin: 1.2cm 1.4cm; }
+  body { font-family: "Times New Roman", "Segoe UI", serif; font-size: 10pt; line-height: 1.22; color: #111827; }
+  h1 { font-size: 13pt; color: #991b1b; border-bottom: 1.5pt solid #991b1b; padding-bottom: 3pt; margin: 0 0 6pt 0; text-transform: uppercase; }
+  h2 { font-size: 10.5pt; color: #1e293b; background: #f1f5f9; padding: 2.5pt 5pt; border-left: 3pt solid #dc2626; margin: 7pt 0 3pt 0; }
+  p { margin: 0 0 4pt 0; text-align: justify; }
+  table { width: 100%; border-collapse: collapse; margin: 4pt 0 6pt 0; font-size: 8.5pt; }
+  th { background: #1e293b; color: #fff; padding: 3pt 4pt; border: 0.5pt solid #cbd5e1; text-align: left; }
+  td { padding: 2.5pt 4pt; border: 0.5pt solid #cbd5e1; vertical-align: top; }
+</style>
+</head>
+<body>
+
+<h1>АРТЕФАКТЫ И ПРЕЗЕНТАЦИЯ (КЕЙС №5. RED WINGS — Т1)</h1>
+<p><b>Команда:</b> Red Wings Network Strategy Team (Вершков С. А., Макаров Г. А., Камынин А. В., Кафтанов К. Д., Виноградов М. Р.)</p>
+
+<h2>1. Данные с источниками, единицами измерения и периодами</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Набор данных / витрина в проекте</th>
+      <th>Что описывают сведения</th>
+      <th>Единицы измерения</th>
+      <th>Период</th>
+      <th>Источник данных (первичный / расчётный)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>data/raw/rosstat_cities.csv</code></td>
+      <td>Численность населения 12 региональных центров и городов-спутников (2ч изохрона), индекс покупательной способности (PPI)</td>
+      <td><code>population</code>: млн чел. (0,90–1,54); <code>PPI</code>: у.е. (0,76–1,18); время в пути <code>t</code>: часы (0,35–2,0 ч)</td>
+      <td>2024–2025 гг.</td>
+      <td>Росстат (Численность населения РФ по муниципальным образованиям; социально-экономические показатели регионов)</td>
+    </tr>
+    <tr>
+      <td><code>data/raw/rosaviatsia_2025.csv</code></td>
+      <td>Годовой пассажиропоток 12 аэропортов (KUF, KZN, SVX, UFA, GOJ, PEE, CEK, TJM, MRV, VOG, GSV, OMS), координаты КТА</td>
+      <td><code>pax_total_2025</code>: млн пасс./год (1,15–7,50); <code>lat, lon</code>: градусы WGS-84</td>
+      <td>2024–2025 гг.</td>
+      <td>Росавиация (ФАВТ Минтранса РФ, статистика перевозок пассажиров и грузов через аэропорты РФ) + AIP РФ</td>
+    </tr>
+    <tr>
+      <td><code>data/raw/schedules_raw.json</code> &amp; <code>routes_proof.csv</code></td>
+      <td>Матрица 66 уникальных пар городов O-D: расстояние с учётом ОрВД (k=1,08), недельная частота, число перевозчиков, индекс HHI</td>
+      <td><code>distance_km</code>: км (340–2 510 км); <code>weekly_freq</code>: рейсов/нед.; <code>HHI</code>: п. (0–10 000)</td>
+      <td>Сезон 2025/2026</td>
+      <td>Онлайн-табло 12 аэропортов РФ (очищено от код-шеринговых дублей ±5 мин. скриптом <code>schedule_scraper.py</code>)</td>
+    </tr>
+    <tr>
+      <td><code>src/models/sj100_fleet.py</code></td>
+      <td>ЛТХ и нормативы экономики ВС SSJ-100 / SJ-100 и ставки софинансирования региональных рейсов в обход МАУ</td>
+      <td>Ёмкость: 100 кресел; скорость: 830 км/ч; расход ТС-1: 1 750 кг/ч + 850 кг ВПЦ; керосин: 78 500 ₽/т; субсидия: тыс. ₽/рейс</td>
+      <td>Нормативы 2025–2026 гг.</td>
+      <td>РЛЭ SSJ-100 / SJ-100, отраслевые нормативы ТОиР и лизинга, <b>Постановление Правительства РФ № 1242</b></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>2. Расчёт, сводная таблица маршрутов, код и интерактивный дашборд</h2>
+<p><b>Архитектура кода и аналитического дашборда (Python + React/TypeScript + Streamlit):</b></p>
+<ul>
+  <li><b>ETL и парсинг (Dev 1):</b> <code>src/parsers/build_dataset.py</code>, <code>rosstat_loader.py</code>, <code>schedule_scraper.py</code> → генерация витрин <code>data/processed/cities_features.parquet</code> и <code>routes_proof.parquet</code>.</li>
+  <li><b>Математический скоринг, Гравитация и Scissor Hub (Dev 2):</b> <code>src/scoring/normalizer.py</code>, <code>src/scoring/city_scorer.py</code> → функции <code>score_cities()</code>, <code>run_weight_sensitivity()</code> (2000 симуляций Монте-Карло), <code>calculate_effective_population()</code>, <code>calculate_gravity_matrix()</code>, <code>calculate_scissor_hub_index()</code>. Выгрузки: <code>src/scoring/reports/hub/ranked_cities.csv</code> и <code>p2p/ranked_cities.csv</code>.</li>
+  <li><b>Юнит-экономика SJ-100, Цифровизация и Стратегия Топ-2 (Dev 3):</b> <code>src/models/unit_economics.py</code> → расчёт себестоимости парного рейса, BELF, <code>evaluate_digital_transformation_impact()</code> и <code>project_path_to_top2_airline()</code>.</li>
+  <li><b>Интерактивный дашборд (Dev 4):</b> веб-приложение (<code>src/App.tsx</code>, <code>app.py</code>) с 4 модулями: (1) Симулятор юнит-экономики и чувствительности к керосину/SLF/субсидиям; (2) Скоринг городов с настраиваемыми весами и 2ч изохронами; (3) ГИС-карта сети в обход МАУ и таблица пруфов; (4) Архитектура и выгрузка CSV/DOC.</li>
+</ul>
+
+<p><b>Расчётная таблица Топ-10 приоритетных региональных маршрутов Волны 1 (в обход МАУ, флот SJ-100):</b></p>
+<table>
+  <thead>
+    <tr>
+      <th>№</th>
+      <th>Маршрут (ИАТА)</th>
+      <th>Направление</th>
+      <th>Дистанция (км)</th>
+      <th>Индекс плеча SJ-100</th>
+      <th>Частота (пар/нед.)</th>
+      <th>Конкуренты (прямые)</th>
+      <th>Субсидия ПП №1242</th>
+      <th>BELF (с цифровиз.)</th>
+      <th>Статус рентабельности</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td><b>KUF ↔ MRV</b></td><td>Самара — Мин. Воды</td><td>1 040 км</td><td>1,00 (Оптимум)</td><td>4</td><td>1 (низкая частота)</td><td>Да (приоритет)</td><td>56,2%</td><td><b>Высокоприбыльный</b></td></tr>
+    <tr><td>2</td><td><b>SVX ↔ KZN</b></td><td>Екатеринбург — Казань</td><td>720 км</td><td>0,86</td><td>4</td><td>1</td><td>Да</td><td>58,4%</td><td><b>Прибыльный</b></td></tr>
+    <tr><td>3</td><td><b>KUF ↔ SVX</b></td><td>Самара — Екатеринбург</td><td>780 км</td><td>0,90</td><td>4</td><td>1</td><td>Да</td><td>57,8%</td><td><b>Прибыльный (опора ножниц)</b></td></tr>
+    <tr><td>4</td><td><b>KZN ↔ MRV</b></td><td>Казань — Мин. Воды</td><td>1 290 км</td><td>1,00 (Оптимум)</td><td>3</td><td>1</td><td>Да</td><td>56,9%</td><td><b>Высокоприбыльный</b></td></tr>
+    <tr><td>5</td><td><b>UFA ↔ MRV</b></td><td>Уфа — Мин. Воды</td><td>1 310 км</td><td>1,00 (Оптимум)</td><td>3</td><td>1</td><td>Да</td><td>57,1%</td><td><b>Высокоприбыльный</b></td></tr>
+    <tr><td>6</td><td><b>GOJ ↔ MRV</b></td><td>Н. Новгород — Мин. Воды</td><td>1 340 км</td><td>1,00 (Оптимум)</td><td>3</td><td>0 (вакуум)</td><td>Да (приоритет)</td><td>55,8%</td><td><b>Высокоприбыльный</b></td></tr>
+    <tr><td>7</td><td><b>KUF ↔ TJM</b></td><td>Самара — Тюмень</td><td>1 090 км</td><td>1,00 (Оптимум)</td><td>3</td><td>0 (вакуум)</td><td>Да (приоритет)</td><td>56,5%</td><td><b>Высокоприбыльный</b></td></tr>
+    <tr><td>8</td><td><b>PEE ↔ KUF</b></td><td>Пермь — Самара</td><td>690 км</td><td>0,84</td><td>2</td><td>0 (вакуум)</td><td>Да</td><td>59,1%</td><td><b>Прибыльный (плечо ножниц)</b></td></tr>
+    <tr><td>9</td><td><b>CEK ↔ KUF</b></td><td>Челябинск — Самара</td><td>760 км</td><td>0,89</td><td>2</td><td>0 (вакуум)</td><td>Да</td><td>58,5%</td><td><b>Прибыльный (плечо ножниц)</b></td></tr>
+    <tr><td>10</td><td><b>KUF ↔ VOG</b></td><td>Самара — Волгоград</td><td>640 км</td><td>0,80</td><td>2</td><td>0 (вакуум)</td><td>Да</td><td>59,6%</td><td><b>Прибыльный (плечо ножниц)</b></td></tr>
+  </tbody>
+</table>
+
+<h2>3. Материалы от ИИ (прозрачность использования и ручная верификация — AI_USAGE.md)</h2>
+<ul>
+  <li><b>Где применялся ИИ (LLM-ассистенты):</b> (1) генерация шаблонного boilerplate-кода автотестов <code>pytest</code> и вёрстки UI-компонентов дашборда; (2) структурирование документации (<code>GRAVITY_MODEL.md</code>, <code>SCISSOR_HUB.md</code>) и первичный сбор справочника времён доезда от городов-спутников (Тольятти, Дзержинск, Наб. Челны).</li>
+  <li><b>Что разработано и проверено командой вручную (Zero-Hallucination Policy):</b> все математические формулы (<code>distance_sweet_spot_score</code>, экспоненциальное затухание изохрон λ=0,45, фильтр географического крюка &lt;15% для полухаба «ножницы»), нормативы расхода ТС-1 и ставок ПП РФ № 1242 заданы детерминированно в коде и проверены 11 модульными тестами с точностью до 10<sup>−9</sup> (<code>src/scoring/reports/validation.json</code>). ИИ не принимает решений в контуре расчёта — все числа воспроизводятся скриптом <code>python -m src.scoring</code>.</li>
+</ul>
+
+</body>
+</html>

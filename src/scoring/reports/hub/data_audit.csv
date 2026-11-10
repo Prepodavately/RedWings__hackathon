@@ -1,4 +1,4 @@
-﻿iata,criterion,value,src,status,period,method,low,high
+iata,criterion,value,src,status,period,method,low,high
 CEK,population,1.474039,"data/raw/rosstat_cities.csv (agglomeration_members, source_rosstat)",,,,,
 CEK,hub_distance,1497.0,,,,,,
 CEK,competitor_gap,66.0,,,,,,

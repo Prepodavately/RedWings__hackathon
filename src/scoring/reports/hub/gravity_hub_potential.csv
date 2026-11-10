@@ -1,4 +1,4 @@
-﻿iata,city_name,effective_population_mln,purchasing_power_index,gravity_hub_potential,eligible,rank,total_score,gravity_rank_all,gravity_rank_eligible
+iata,city_name,effective_population_mln,purchasing_power_index,gravity_hub_potential,eligible,rank,total_score,gravity_rank_all,gravity_rank_eligible
 GOJ,Нижний Новгород,1.6711587926500737,1.0277121028670544,0.005080576940479389,True,6,57.928835215619216,1,1
 KUF,Самара,1.8356780646075075,0.9748875633748163,0.004975633489077041,True,1,77.39200000000001,2,2
 CEK,Челябинск,1.3986501680965717,1.0351930347604639,0.004959672028054842,True,5,60.061492634983864,3,3

@@ -1,4 +1,4 @@
-﻿hub_iata,origin_iata,dest_iata,direct_km,leg_origin_hub_km,leg_hub_dest_km,via_km,detour_ratio,detour_pct,distance_ratio_defined,eligible,gravity_index,contribution
+hub_iata,origin_iata,dest_iata,direct_km,leg_origin_hub_km,leg_hub_dest_km,via_km,detour_ratio,detour_pct,distance_ratio_defined,eligible,gravity_index,contribution
 KUF,SVX,KZN,723.5725200374106,765.7974573780089,240.9031293299081,1006.700586707917,1.391291900714897,39.129190071489695,True,False,0.0001838231547357528,0.0
 KUF,SVX,UFA,393.82959868400576,765.7974573780089,390.83250252730153,1156.6299599053104,2.936879208089556,193.6879208089556,True,False,3.148203097540478e-05,0.0
 KUF,SVX,PEE,315.37140286254083,765.7974573780089,612.8812438328829,1378.6787012108916,4.371603413299362,337.1603413299362,True,False,0.00010005149372611181,0.0

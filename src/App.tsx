@@ -196,15 +196,39 @@ export default function App() {
           </button>
         </nav>
 
-        {/* Zone 3: 1 Primary Action */}
-        <div className="shrink-0">
+        {/* Zone 3: Quick Downloads for Submission */}
+        <div className="flex items-center gap-2 shrink-0">
+          <a
+            href="/PASSPORT_RED_WINGS.doc"
+            download="Паспорт_проекта_Red_Wings_Кейс5.doc"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Паспорт (.DOC)</span>
+          </a>
+          <a
+            href="/RESULT_CASE_5_RED_WINGS.doc"
+            download="Результат_по_кейсу_Red_Wings.doc"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 rounded-lg transition-colors whitespace-nowrap shrink-0"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Результат (.DOC)</span>
+          </a>
+          <a
+            href="/ARTIFACTS_AND_AI_MATERIALS.doc"
+            download="Артефакты_и_ИИ_Red_Wings.doc"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 border border-slate-200 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Артефакты (.DOC)</span>
+          </a>
           <button
             type="button"
             onClick={handleExportCsv}
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>{exportSuccess ? 'Отчет CSV выгружен' : 'Скачать расчет CSV'}</span>
+            <span>{exportSuccess ? 'CSV выгружен' : 'Расчет CSV'}</span>
           </button>
         </div>
       </header>
@@ -257,6 +281,24 @@ export default function App() {
                   Осторожный (пессимистичный)
                 </button>
               </div>
+
+              <a
+                href="/PASSPORT_RED_WINGS.doc"
+                download="Паспорт_проекта_Red_Wings.doc"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors whitespace-nowrap shrink-0"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Паспорт проекта (.DOC)</span>
+              </a>
+
+              <a
+                href="/PASSPORT_RED_WINGS.md"
+                download="Паспорт_проекта_Red_Wings.md"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap shrink-0"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>.MD</span>
+              </a>
 
               <button
                 type="button"

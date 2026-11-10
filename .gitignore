@@ -6,3 +6,14 @@ coverage/
 *.log
 .env*
 !.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.tmp
+PROJECT_PASSPORT*
+*diff*.txt
+review_*.md
+REVIEW_RESPONSE.md
+

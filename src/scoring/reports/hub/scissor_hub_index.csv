@@ -1,4 +1,4 @@
-﻿iata,city_name,scissor_rank,scissor_hub_index,eligible_directed_pairs,eligible_undirected_pairs,positive_gravity_directed_pairs,valid_directed_pairs,eligible,exclusion_reason
+iata,city_name,scissor_rank,scissor_hub_index,eligible_directed_pairs,eligible_undirected_pairs,positive_gravity_directed_pairs,valid_directed_pairs,eligible,exclusion_reason
 UFA,Уфа,1,0.01546981028367869,52,26,52,110,True,
 KUF,Самара,2,0.01191296598400287,46,23,46,110,True,
 SVX,Екатеринбург,3,0.011127098730855836,40,20,40,110,False,Опорный узел Мск/Екб: не кандидат на новый хаб

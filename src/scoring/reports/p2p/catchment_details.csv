@@ -1,4 +1,4 @@
-﻿iata,satellite,satellite_population,access_time_h,time_source,within_two_hours,decay_weight,effective_contribution_mln
+iata,satellite,satellite_population,access_time_h,time_source,within_two_hours,decay_weight,effective_contribution_mln
 KUF,Городской округ Тольятти,662683,0.75,scenario_override,True,0.7135519747065024,0.47285876325442916
 KUF,Муниципальный район Волжский,132763,0.65,scenario_default,True,0.7463952450358817,0.09909367191669877
 KUF,Муниципальный район Ставропольский,90149,0.65,scenario_default,True,0.7463952450358817,0.0672867849447397
