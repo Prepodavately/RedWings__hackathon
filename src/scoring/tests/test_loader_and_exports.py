@@ -61,7 +61,7 @@ def test_gravity_exports_all_pairs_and_keep_linear_ranking(tmp_path, monkeypatch
     source = root / "data/processed/cities_features.parquet"
     routes = root / "data/processed/routes_proof.parquet"
     monkeypatch.setattr(sys, "argv", ["scoring", "--input", str(source), "--output", str(tmp_path),
-        "--samples", "20", "--with-gravity", "--routes", str(routes)])
+        "--samples", "20", "--with-gravity", "--routes", str(routes), "--with-scissor"])
     with pytest.warns(UserWarning):
         assert main() == 0
     matrix = pd.read_csv(tmp_path / "gravity_matrix.csv", index_col=0)
@@ -79,3 +79,9 @@ def test_gravity_exports_all_pairs_and_keep_linear_ranking(tmp_path, monkeypatch
     assert top.iata.tolist() == ["KUF", "KZN", "UFA"]
     assert top.total_score.round(2).tolist() == [77.39, 73.78, 64.54]
     assert metadata["gravity"]["population_reconciliation"][0]["iata"] == "MRV"
+    scissor = pd.read_csv(tmp_path / "scissor_hub_index.csv").set_index("iata")
+    scissor_pairs = pd.read_csv(tmp_path / "scissor_pairs.csv")
+    assert len(scissor) == 12 and len(scissor_pairs) == 12 * 11 * 10
+    sums = scissor_pairs.groupby("hub_iata").contribution.sum()
+    np.testing.assert_allclose(scissor.scissor_hub_index, sums.reindex(scissor.index))
+    assert metadata["gravity"]["scissor"]["max_detour_pct"] == 15.0

@@ -145,6 +145,18 @@ def _gravity_range_weight(distances: np.ndarray) -> np.ndarray:
     return np.interp(distances, GRAVITY_DISTANCE_KNOTS_KM, [0.0, 1.0, 1.0, 0.0], left=0.0, right=0.0)
 
 
+def _airport_distance_matrix(cities: pd.DataFrame) -> np.ndarray:
+    """Гаверсинус по координатам аэропортов; проверяет координаты в копии входа."""
+    coordinates = cities.loc[:, ["lat", "lon"]].copy()
+    for column, low, high in (("lat", -90, 90), ("lon", -180, 180)):
+        _number_column(coordinates, column, low, high)
+    lat, lon = np.radians(coordinates["lat"].to_numpy()), np.radians(coordinates["lon"].to_numpy())
+    a = (np.sin((lat[:, None] - lat[None, :]) / 2) ** 2
+         + np.cos(lat[:, None]) * np.cos(lat[None, :])
+         * np.sin((lon[:, None] - lon[None, :]) / 2) ** 2)
+    return 2 * 6371.0 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+
+
 def calculate_gravity_matrix(
     cities_df: pd.DataFrame, routes_df: pd.DataFrame | None = None, gamma: float = 1.15,
 ) -> pd.DataFrame:
@@ -173,9 +185,7 @@ def calculate_gravity_matrix(
     codes = cities["iata"].tolist()
     index = {code: i for i, code in enumerate(codes)}
     n = len(codes)
-    lat, lon = np.radians(cities["lat"].to_numpy()), np.radians(cities["lon"].to_numpy())
-    a = np.sin((lat[:, None] - lat[None, :]) / 2) ** 2 + np.cos(lat[:, None]) * np.cos(lat[None, :]) * np.sin((lon[:, None] - lon[None, :]) / 2) ** 2
-    distances = 2 * 6371.0 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+    distances = _airport_distance_matrix(cities)
     range_weight = _gravity_range_weight(distances)
     frequencies = np.zeros((n, n), dtype=float)
     observed = np.zeros((n, n), dtype=bool)
@@ -235,6 +245,105 @@ def calculate_gravity_matrix(
         "distance_km": distances.tolist(), "range_weight": range_weight.tolist(),
         "gravity_hub_potential": result.sum(axis=1).to_dict(),
     })
+    return result
+
+
+def calculate_scissor_hub_index(
+    cities_df: pd.DataFrame, gravity_df: pd.DataFrame, *, max_detour_pct: float = 15.0,
+) -> pd.DataFrame:
+    """Сумма G_ij для i != j, i != h, j != h и (d_ih+d_hj)/d_ij < 1+p/100.
+
+    p=max_detour_pct — согласованный сценарный порог (15 означает 15%).
+    G_ij направлена: А→Б и Б→А учитываются каждый один раз со своим весом.
+    Геометрия пересчитывается из lat/lon, поэтому attrs матрицы не обязательны.
+    Нулевая прямая дистанция исключается как неопределённое отношение.
+    Граница строгая с точностью 1e-12 в отношении длин. Возвращаются все города
+    с индексом/рангом и числом направлений; слагаемые — attrs['pair_details'].
+    Геометрическая пригодность не доказывает спрос, расписание стыковок или
+    экономию на ангаре. Входы не изменяются; равные индексы имеют общий ранг.
+    """
+    threshold = _finite_parameter(max_detour_pct, "max_detour_pct")
+    cities = _identified_cities(cities_df)
+    if len(cities) < 3:
+        raise ValueError("Для транзитного индекса нужны минимум три города")
+    if not {"lat", "lon"} <= set(cities.columns):
+        raise ValueError("Для транзитного индекса нужны lat и lon аэропортов")
+    distances = _airport_distance_matrix(cities)
+    codes = cities["iata"].tolist()
+    if not isinstance(gravity_df, pd.DataFrame):
+        raise ValueError("gravity_df должна быть квадратным DataFrame с IATA по обеим осям")
+    gravity = gravity_df.copy(deep=True)
+    for axis in ("index", "columns"):
+        labels = getattr(gravity, axis)
+        if not all(isinstance(value, str) for value in labels):
+            raise ValueError("Оси gravity_df должны содержать строковые IATA-коды")
+        labels = pd.Index([value.strip().upper() for value in labels])
+        if labels.has_duplicates or set(labels) != set(codes):
+            raise ValueError("Оси gravity_df должны точно совпадать с уникальными IATA cities_df")
+        setattr(gravity, axis, labels)
+    try:
+        values = gravity.loc[codes, codes].apply(pd.to_numeric, errors="raise").to_numpy(dtype=float)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("gravity_df должна содержать числа") from exc
+    if not np.isfinite(values).all() or (values < 0).any():
+        raise ValueError("gravity_df: значения должны быть конечными и неотрицательными")
+    if np.any(np.diag(values) != 0):
+        raise ValueError("gravity_df: диагональ должна быть нулевой")
+    n, limit, tolerance = len(codes), 1.0 + threshold / 100.0, 1e-12
+    origins, destinations = np.indices((n, n))
+    details, scores, counts, positive_counts, valid_counts = [], [], [], [], []
+    for h, code in enumerate(codes):
+        via = distances[:, h, None] + distances[h, None, :]
+        ratio = np.full((n, n), np.nan)
+        np.divide(via, distances, out=ratio, where=distances > 0)
+        # Защита от округления неравенства треугольника на совпадающей геодезической.
+        ratio = np.maximum(ratio, 1.0)
+        transit = (origins != destinations) & (origins != h) & (destinations != h)
+        valid = transit & np.isfinite(ratio)
+        eligible = valid & (ratio < limit) & ~np.isclose(ratio, limit, rtol=0, atol=tolerance)
+        contribution = np.where(eligible, values, 0.0)
+        with np.errstate(over="ignore"):
+            score = float(contribution.sum())
+        if not np.isfinite(score):
+            raise ValueError("Переполнение транзитного индекса: проверьте масштаб gravity_df")
+        scores.append(score)
+        counts.append(int(eligible.sum()))
+        positive_counts.append(int((eligible & (values > 0)).sum()))
+        valid_counts.append(int(valid.sum()))
+        for i, j in zip(*np.where(transit)):
+            defined = bool(valid[i, j])
+            details.append({
+                "hub_iata": code, "origin_iata": codes[i], "dest_iata": codes[j],
+                "direct_km": float(distances[i, j]),
+                "leg_origin_hub_km": float(distances[i, h]),
+                "leg_hub_dest_km": float(distances[h, j]), "via_km": float(via[i, j]),
+                "detour_ratio": float(ratio[i, j]) if defined else None,
+                "detour_pct": float(100 * (ratio[i, j] - 1)) if defined else None,
+                "distance_ratio_defined": defined, "eligible": bool(eligible[i, j]),
+                "gravity_index": float(values[i, j]), "contribution": float(contribution[i, j]),
+            })
+    result = cities.copy(deep=True)
+    result["scissor_hub_index"] = scores
+    result["eligible_directed_pairs"] = counts
+    result["eligible_undirected_pairs"] = np.asarray(counts) // 2
+    result["positive_gravity_directed_pairs"] = positive_counts
+    result["valid_directed_pairs"] = valid_counts
+    result["scissor_rank"] = result["scissor_hub_index"].rank(method="min", ascending=False).astype(int)
+    result = result.sort_values(["scissor_hub_index", "iata"], ascending=[False, True]).reset_index(drop=True)
+    result.attrs = {
+        "model": "scenario_geometric_transit_index_not_economic_proof",
+        "formula": "sum(G_ij for i != j, i != h, j != h if (d_ih+d_hj)/d_ij < 1+p/100)",
+        "max_detour_pct": threshold, "ratio_limit": limit, "boundary_tolerance": tolerance,
+        "comparison": "strict_less_than", "distance_method": "airport_haversine_R_6371_km",
+        "pair_accounting": "directed; each origin-destination direction counted once per hub",
+        "distance_ratio_undefined": "zero direct distance: excluded",
+        "candidate_count": n, "pair_details": details,
+        "limitations": [
+            "Индекс использует геодезические расстояния; фактические трассы и время посадки не учтены.",
+            "Вклад G_ij описывает исходную пару; ограничения каждого плеча и расписание стыковок проверяются отдельно.",
+            "Спрос, загрузка, число бортов и экономия на ангаре этим индексом не определяются.",
+        ],
+    }
     return result
 
 
