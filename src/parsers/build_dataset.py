@@ -29,7 +29,7 @@ from src.parsers.rosstat_loader import (
     haversine_km,
     load_rosstat_and_rosaviatsia,
 )
-from src.parsers.schedule_scraper import load_schedules
+from src.parsers.schedule_scraper import fetch_competitor_routes
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
@@ -121,9 +121,11 @@ def build_cities_features() -> pd.DataFrame:
 def _pair_competitor_info() -> dict[tuple[str, str], dict]:
     """
     По каждой паре: рейсы конкурентов (без Red Wings), рейсы Red Wings, тарифы.
-    Пары, которых нет в schedules_raw.json, в результат не попадают.
+    Данные идут через fetch_competitor_routes (use_cache=True → schedules_raw.json);
+    пары, которых нет в кэше, в результат не попадают.
     """
-    df = load_schedules()
+    all_pairs = [(a, b) for a in TZ_CITIES for b in TZ_CITIES if a != b]
+    df = fetch_competitor_routes(all_pairs, use_cache=True)
     info: dict[tuple[str, str], dict] = {}
     for (origin, dest), g in df.groupby(["origin_iata", "dest_iata"]):
         comp = g[~g["own_operator"]]
