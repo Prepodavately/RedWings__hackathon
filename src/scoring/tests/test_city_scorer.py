@@ -197,7 +197,7 @@ def test_cli_exports_auditable_files(complete, tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["scoring", "--input", str(input_path),
                                     "--output", str(output), "--samples", "20"])
     assert main() == 0
-    metadata = json.loads((output / "run_metadata.json").read_text())
+    metadata = json.loads((output / "run_metadata.json").read_text(encoding="utf-8"))
     assert metadata["mode"] == "case"
     assert len(metadata["input_sha256"]) == 64
     assert len(pd.read_csv(output / "top3.csv")) == 3
@@ -320,7 +320,7 @@ def test_cli_auto_exports_actual_selected_mode(complete, tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["scoring", "--input", str(path), "--output", str(output), "--samples", "20"])
     with pytest.warns(UserWarning, match="auto выбрал exploratory"):
         assert main() == 0
-    metadata = json.loads((output / "run_metadata.json").read_text())
+    metadata = json.loads((output / "run_metadata.json").read_text(encoding="utf-8"))
     assert metadata["requested_mode"] == "auto"
     assert metadata["mode"] == "exploratory"
     assert metadata["distance_scoring"]["input"] == "dist_to_mow_km"

@@ -86,10 +86,10 @@ def load_rosstat_and_rosaviatsia(raw_dir: Path = RAW_DIR) -> pd.DataFrame:
     if df["airport_pax_2025_mln"].isna().any():
         raise ValueError("Нет данных по пассажиропотоку аэропорта для части городов")
 
-    df["lat"] = df["iata"].map(lambda c: AIRPORT_COORDS[c][0])
-    df["lon"] = df["iata"].map(lambda c: AIRPORT_COORDS[c][1])
+    df["lat"] = df["iata"].map(lambda c: AIRPORT_COORDS[str(c)][0])
+    df["lon"] = df["iata"].map(lambda c: AIRPORT_COORDS[str(c)][1])
     df["dist_to_mow_km"] = [
-        int(round(haversine_km(AIRPORT_COORDS[c], MOSCOW_HUB))) for c in df["iata"]
+        int(round(haversine_km(AIRPORT_COORDS[str(c)], MOSCOW_HUB))) for c in df["iata"]
     ]
 
     missing = df.loc[df["main_competitor"].isna() | df["competitor_share_pct"].isna(), "iata"].tolist()

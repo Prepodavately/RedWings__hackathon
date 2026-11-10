@@ -23,12 +23,13 @@ import re
 import time
 import warnings
 from typing import Dict, List, Optional, Tuple
+from pathlib import Path
 
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup # type: ignore
 
-from src.parsers.rosstat_loader import RAW_DIR
+RAW_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "raw"
 
 SCHEDULES_FILE = RAW_DIR / "schedules_raw.json"
 REQUIRED_KEYS = {

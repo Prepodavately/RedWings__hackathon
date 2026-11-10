@@ -49,7 +49,7 @@ def test_cli_fallback_exports_hash_of_actual_input(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["scoring", "--input", str(path), "--output", str(output), "--samples", "20"])
     with pytest.warns(UserWarning):
         assert main() == 0
-    metadata = json.loads((output / "run_metadata.json").read_text())
+    metadata = json.loads((output / "run_metadata.json").read_text(encoding="utf-8"))
     assert metadata["input_hash_kind"] == "fallback_input_csv_bytes"
     assert metadata["input_source"].endswith("load_rosstat_and_rosaviatsia")
     assert hashlib.sha256((output / metadata["input_snapshot"]).read_bytes()).hexdigest() == metadata["input_sha256"]
@@ -68,7 +68,7 @@ def test_gravity_exports_all_pairs_and_keep_linear_ranking(tmp_path, monkeypatch
     pairs = pd.read_csv(tmp_path / "gravity_pairs.csv")
     population = pd.read_csv(tmp_path / "effective_population.csv").set_index("iata")
     potential = pd.read_csv(tmp_path / "gravity_hub_potential.csv").set_index("iata")
-    metadata = json.loads((tmp_path / "run_metadata.json").read_text())
+    metadata = json.loads((tmp_path / "run_metadata.json").read_text(encoding="utf-8"))
     assert matrix.shape == (12, 12) and len(pairs) == 132
     assert not pairs.duplicated(["origin_iata", "dest_iata"]).any()
     assert np.isfinite(matrix).all().all() and (np.diag(matrix) == 0).all()
