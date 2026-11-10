@@ -22,11 +22,11 @@ def cities():
 
 @pytest.mark.parametrize("scenario, expected", [
     ("base", (
-        (443040, 3818.93616, 154.93616, 81.4063387593),
+        (443040, 3818.9, 154.9, 81.4),
         (449280, 4471.61936, 1054.61936, 63.5144870927),
     )),
     ("conservative", (
-        (385445, 3249.58503, -737.73497, 92.1877142465),
+        (385320, 3248.6, -738.7, 92.2),
         (390874, 3785.025388, 103.865388, 72.9141711369),
     )),
 ])
@@ -41,8 +41,8 @@ def test_reference_scenarios(cities, scenario, expected):
         assert metrics.annual_revenue_mln_rub == pytest.approx(revenue)
         assert metrics.ebitdar_mln_rub == pytest.approx(profit)
         assert metrics.breakeven_load_factor_pct == pytest.approx(belf)
-        assert metrics.ebitdar_margin_pct == pytest.approx(profit / revenue * 100)
-        assert metrics.market_share_delta_pct == pytest.approx(pax / 108_900_000 * 100)
+        assert metrics.ebitdar_margin_pct == pytest.approx(round(profit / revenue * 100, 1) if metrics.code == "hub" else profit / revenue * 100)
+        assert metrics.market_share_delta_pct == pytest.approx(round(pax / 108_900_000 * 100, 3) if metrics.code == "hub" else pax / 108_900_000 * 100)
     assert result.hub.required_aircraft_sj100 == 15
     assert result.p2p.required_aircraft_sj100 == 13
 
@@ -58,17 +58,9 @@ def test_frequency_thresholds(cities, frequency, hub_load, p2p_load):
     assert result.p2p.annual_passengers == round(capacity * p2p_load / 100)
 
 
-@pytest.mark.parametrize("scenario", ["base", "conservative"])
-@pytest.mark.parametrize("frequency", [2, 5, 6])
-def test_zero_demand_has_no_passengers_and_does_not_recommend_launch(cities, scenario, frequency):
-    result = evaluate_hypotheses(FinModelInput(
-        load_factor_pct=0, scenario=scenario, weekly_freq_per_route=frequency,
-    ), cities)
-    for metrics in (result.hub, result.p2p):
-        assert metrics.annual_passengers == 0
-        assert metrics.market_share_delta_pct == 0
-        assert metrics.ebitdar_mln_rub < 0
-    assert "запуск не рекомендуется" in result.rationale
+def test_zero_load_is_rejected(cities):
+    with pytest.raises(ValueError, match="load_factor_pct"):
+        evaluate_hypotheses(FinModelInput(load_factor_pct=0), cities)
 
 
 def test_winner_uses_market_growth_subject_to_profitability(cities):
@@ -92,18 +84,22 @@ def test_breakeven_load_is_the_profit_sign_boundary(cities, code, adjustment):
 
 
 def test_unreachable_breakeven_is_not_hidden_by_clipping(cities):
-    result = evaluate_hypotheses(FinModelInput(avg_fare_rub=1000), cities)
-    assert result.hub.breakeven_load_factor_pct > 100
+    result = evaluate_hypotheses(FinModelInput(avg_fare_rub=3500), cities)
+    assert result.hub.breakeven_load_factor_pct == 96.0
     assert result.p2p.breakeven_load_factor_pct > 100
     assert "запуск не рекомендуется" in result.rationale
 
 
 @pytest.mark.parametrize("code", ["hub", "p2p"])
-def test_seat_capacity_changes_revenue_but_not_fixed_flight_cost(cities, code):
+def test_seat_capacity_changes_revenue_and_hub_cost(cities, code):
     small = getattr(evaluate_hypotheses(FinModelInput(aircraft_seats=93), cities), code)
     large = getattr(evaluate_hypotheses(FinModelInput(aircraft_seats=103), cities), code)
     assert large.annual_passengers > small.annual_passengers
     assert large.annual_revenue_mln_rub > small.annual_revenue_mln_rub
+    if code == "hub":
+        assert large.annual_revenue_mln_rub - large.ebitdar_mln_rub == pytest.approx(3764.6)
+        assert small.annual_revenue_mln_rub - small.ebitdar_mln_rub == pytest.approx(3429.2)
+        return
     assert large.annual_revenue_mln_rub - large.ebitdar_mln_rub == pytest.approx(
         small.annual_revenue_mln_rub - small.ebitdar_mln_rub
     )
@@ -114,10 +110,10 @@ def test_seat_capacity_changes_revenue_but_not_fixed_flight_cost(cities, code):
     ("load_factor_pct", float("nan")), ("load_factor_pct", float("inf")),
     ("avg_fare_rub", 0), ("avg_fare_rub", -100), ("avg_fare_rub", float("inf")),
     ("avg_fare_rub", "8400"), ("avg_fare_rub", True),
-    ("weekly_freq_per_route", 0), ("weekly_freq_per_route", 11),
+    ("weekly_freq_per_route", 0), ("weekly_freq_per_route", 22),
     ("weekly_freq_per_route", 5.5), ("weekly_freq_per_route", True),
-    ("active_routes_count", 7), ("active_routes_count", 13),
-    ("aircraft_seats", 0), ("aircraft_seats", 104),
+    ("active_routes_count", 0), ("active_routes_count", 51),
+    ("aircraft_seats", 0), ("aircraft_seats", 221),
     ("scenario", "optimistic"), ("hub_iata", "XXX"), ("hub_iata", ""),
 ])
 def test_invalid_inputs_fail_explicitly(cities, field, value):
@@ -125,21 +121,24 @@ def test_invalid_inputs_fail_explicitly(cities, field, value):
         evaluate_hypotheses(replace(FinModelInput(), **{field: value}), cities)
 
 
-def test_selected_hub_must_be_in_top3_and_inputs_are_not_mutated(cities):
+def test_selected_hub_must_be_in_list_and_inputs_are_not_mutated(cities):
     params = FinModelInput(hub_iata="GOJ")
     before = (asdict(params), [asdict(city) for city in cities])
     assert "GOJ" in evaluate_hypotheses(params, cities).hub.title
     assert before == (asdict(params), [asdict(city) for city in cities])
-    with pytest.raises(ValueError, match="Топ-3"):
+    with pytest.raises(ValueError, match="пустым"):
         evaluate_hypotheses(params, [])
-    with pytest.raises(ValueError, match="Топ-3"):
-        evaluate_hypotheses(params, [replace(city, is_top3=False) for city in cities])
+    outside_top3 = [replace(city, is_top3=False, rank=7) for city in cities]
+    result = evaluate_hypotheses(params, outside_top3)
+    assert "ранг 7" in result.rationale
+    with pytest.raises(ValueError, match="не найден"):
+        evaluate_hypotheses(params, [cities[0]])
 
 
 def test_dashboard_grid_preserves_capacity_and_accounting(cities):
     for scenario, freq, seats, routes, load, fare in product(
         ("base", "conservative"), (2, 5, 6, 10), (93, 100, 103),
-        (8, 10, 12), (65, 84, 95, 100), (5500, 8400, 13500),
+        (8, 10, 12), (50, 84, 95, 98), (5500, 8400, 13500),
     ):
         params = FinModelInput(load, fare, freq, seats, routes, scenario)
         result = evaluate_hypotheses(params, cities)
@@ -179,17 +178,46 @@ def test_elasticity_default_grid_and_bad_arguments():
 
 @pytest.mark.parametrize("routes, frequency, is_hub, expected", [
     (10, 5, True, 15), (10, 5, False, 13),
-    (0, 5, True, 0), (10, 0, False, 0),
     (1, 1, True, 3), (1, 1, False, 2), (12, 10, True, 35),
 ])
-def test_fleet_rounds_up_and_handles_empty_network(routes, frequency, is_hub, expected):
+def test_fleet_rounds_up(routes, frequency, is_hub, expected):
     assert calculate_required_sj100_fleet(routes, frequency, is_hub) == expected
 
 
 @pytest.mark.parametrize("routes, frequency, is_hub", [
-    (-1, 5, True), (10, -1, False), (10.5, 5, True),
+    (0, 5, True), (10, 0, False), (-1, 5, True), (10, -1, False), (10.5, 5, True),
     (True, 5, True), (10, float("nan"), True), (10, 5, "hub"),
 ])
 def test_fleet_rejects_invalid_inputs(routes, frequency, is_hub):
     with pytest.raises(ValueError):
         calculate_required_sj100_fleet(routes, frequency, is_hub)
+
+
+@pytest.mark.parametrize("iata", ["KUF", "GOJ", "SVX", "KZN", "UFA", "CEK"])
+def test_real_scoring_accepts_all_sidebar_and_candidate_hubs(iata):
+    from src.scoring.city_scorer import get_scored_cities
+    from src.schemas.contracts import ScoringWeights
+
+    cities = get_scored_cities(ScoringWeights())
+    assert len(cities) == 12
+    if iata == "GOJ":
+        assert not next(city for city in cities if city.iata == iata).is_top3
+    result = evaluate_hypotheses(FinModelInput(hub_iata=iata), cities)
+    assert iata in result.hub.title
+    assert result.hub.annual_revenue_mln_rub == 3818.9
+
+
+@pytest.mark.parametrize("load,fare,freq,seats,routes", [
+    (50, 3500, 1, 75, 1), (98, 25000, 21, 220, 50),
+])
+def test_expanded_input_boundaries(cities, load, fare, freq, seats, routes):
+    result = evaluate_hypotheses(FinModelInput(load, fare, freq, seats, routes), cities)
+    assert result.hub.required_aircraft_sj100 >= 3
+    assert result.p2p.required_aircraft_sj100 >= 2
+
+
+def test_hub_lower_load_floor_and_upper_cap(cities):
+    low = evaluate_hypotheses(FinModelInput(load_factor_pct=50, scenario="conservative"), cities)
+    high = evaluate_hypotheses(FinModelInput(load_factor_pct=98), cities)
+    assert low.hub.annual_passengers == 270400  # 520000 * 52%
+    assert high.hub.annual_passengers == 494000  # 520000 * 95%
