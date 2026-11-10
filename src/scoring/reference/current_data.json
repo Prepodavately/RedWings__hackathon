@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/Prepodavately/RedWings__hackathon",
+  "base_main_commit": "5a526c0a27a2f10aee85b1e80ef57e2f5c6c5ef0",
+  "created_at_utc": "2026-11-10T04:47:47.922043+00:00",
+  "note": "Актуальные данные Dev 1 из main; первоисточники независимо не перепроверялись.",
+  "files": {
+    "data/processed/cities_features.parquet": {
+      "sha256": "33ae5dbf2009e715613e2c2b0bcb9c009329067e9bc28924d422ed1883ceb393",
+      "last_change_commit": "7eff2407d122018130506a6a70530ff569a2e56b"
+    },
+    "data/processed/routes_proof.parquet": {
+      "sha256": "00a45c85ed6027acd6f1bd9488b2e0d080fcabd0550b02f53b7f831cc5c08c53",
+      "last_change_commit": "7eff2407d122018130506a6a70530ff569a2e56b"
+    }
+  }
+}

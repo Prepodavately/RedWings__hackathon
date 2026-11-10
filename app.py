@@ -68,7 +68,7 @@ def main():
         st.sidebar.info(f"В расчёте и на карте: {counts['hub']} маршрутов хаба, {counts['p2p']} P2P. Размер сети задаёт Dev 1.")
         comparison=economics(params,top)
     except Exception as exc:st.error(f'Не удалось собрать данные и расчёт: {exc}');return
-    tabs=st.tabs(['Обзор решения','Маршрутная сеть','Города и устойчивость','Стресс-тест','Источники и план'])
+    tabs=st.tabs(['Обзор решения','Маршрутная сеть','Города и устойчивость','Стресс-тест','Источники и план','Потенциал направлений'])
     with tabs[0]:
         render_comparison_kpis(comparison)
         st.caption('Пассажиры считаются по участкам перелёта, не как уникальные люди. Прирост доли предполагает отсутствие перетока с существующих рейсов RW.')
@@ -105,6 +105,16 @@ def main():
             for item in [b.hub,b.p2p]:rows.append({'Загрузка на входе, %':load,'Стратегия':item.title,'EBITDAR, млн ₽':item.ebitdar_mln_rub})
         fig=px.line(pd.DataFrame(rows),x='Загрузка на входе, %',y='EBITDAR, млн ₽',color='Стратегия',color_discrete_map={comparison.hub.title:'#D82F4C',comparison.p2p.title:'#247AAB'},markers=True);fig.add_hline(y=0,line_dash='dash')
         st.plotly_chart(fig,use_container_width=True)
+    with tabs[5]:
+        if demo:
+            st.info('Охват и гравитация доступны на данных команды: USE_MOCKS=0. Демо не выдаётся за расчёт Dev 2.')
+        else:
+            from src.ui.gravity_panel import render_gravity_panel
+            try:
+                routes_proof=pd.read_parquet(ROOT/'data/processed/routes_proof.parquet')
+                render_gravity_panel(features,routes_proof,result.table,result.weights)
+            except (ValueError,KeyError,FileNotFoundError) as exc:
+                st.error(f'Расчёт потенциала недоступен: {exc}')
     with tabs[4]:
         st.subheader('Происхождение и ограничения')
         st.json({'mode':mode,'weights':asdict(weights),'params':asdict(params),'network_pairs':counts})

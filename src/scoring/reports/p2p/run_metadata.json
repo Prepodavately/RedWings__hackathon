@@ -5,11 +5,14 @@
   "distance_scoring": {
     "input": "dist_to_mow_km",
     "optimal_km": 1150.0,
-    "formula": "max(35, 100 - 65 * abs(d - 1150) / 1200)"
+    "formula": "round(max(35, 100 - 65 * abs(d - 1150) / 1200), 2)"
   },
-  "input_file": "dev1_e364ac7.csv",
-  "input_sha256": "621e387cf9faaf38c272844af49c2c899ddf5264fb3581500f40ad5e77f9a8a2",
-  "created_at_utc": "2026-11-09T19:30:43.625075+00:00",
+  "input_file": "cities_features.parquet",
+  "input_source": "file",
+  "input_sha256": "33ae5dbf2009e715613e2c2b0bcb9c009329067e9bc28924d422ed1883ceb393",
+  "input_hash_kind": "file_bytes",
+  "input_snapshot": null,
+  "created_at_utc": "2026-11-10T04:43:19.353840+00:00",
   "requested_weights": {
     "w_population": 0.3,
     "w_hub_distance": 0.2,
@@ -56,5 +59,94 @@
     "Предварительный рейтинг: auto выбрал exploratory; нет полей для case: airport_feasible, method_airport_feasibility, method_airport_pax, method_competitor_gap, method_hub_distance, method_moscow_transfer, method_population, method_tourism_demand, moscow_transfer_share_pct, period_airport_feasibility, period_airport_pax, period_competitor_gap, period_hub_distance, period_moscow_transfer, period_population, period_tourism_demand, src_airport_feasibility, src_competitor_gap, src_hub_distance, src_moscow_transfer, src_tourism_demand, status_airport_feasibility, status_airport_pax, status_competitor_gap, status_hub_distance, status_moscow_transfer, status_population, status_tourism_demand. Используются четыре критерия; покажите этот статус в интерфейсе.",
     "Расстояние: max(35, 100 - 65 * |dist_to_mow_km - 1150| / 1200), эвристика команды."
   ],
-  "cutoff_tie": false
+  "cutoff_tie": false,
+  "gravity": {
+    "model": "scenario_gravity_index_not_passenger_forecast",
+    "gamma": 1.15,
+    "population_unit": "million_people",
+    "population_source": "provided_effective_population_mln",
+    "purchasing_power_method": "regional_wage / candidate_mean_regional_wage",
+    "purchasing_power_index": {
+      "KUF": 0.9748875633748163,
+      "SVX": 1.1359566072023055,
+      "KZN": 1.1515927726733943,
+      "UFA": 0.9464523885758876,
+      "PEE": 1.0642007298573577,
+      "CEK": 1.0351930347604639,
+      "GOJ": 1.0277121028670544,
+      "VOG": 0.8694674925095262,
+      "TJM": 1.1975089005701878,
+      "OMS": 0.9300274173609359,
+      "MRV": 0.8100907762739107,
+      "GSV": 0.8569102139741603
+    },
+    "distance_method": "airport_haversine_R_6371_km",
+    "range_knots_km": [
+      300.0,
+      800.0,
+      1500.0,
+      3000.0
+    ],
+    "competition_method": "directional_1_over_1_plus_F; missing_or_NaN_F_is_zero",
+    "missing_competition_pairs": 0,
+    "gravity_hub_potential": {
+      "KUF": 0.004975633489077041,
+      "SVX": 0.002081067738858542,
+      "KZN": 0.0034019681203959285,
+      "UFA": 0.0029936258653732147,
+      "PEE": 0.004078928422190391,
+      "CEK": 0.004959672028054843,
+      "GOJ": 0.005080576940479389,
+      "VOG": 0.004770433698837013,
+      "TJM": 0.0028748157153596953,
+      "OMS": 0.0041996410246675515,
+      "MRV": 0.0006240551872970024,
+      "GSV": 0.0036684327037722533
+    },
+    "formula": "P_eff_i * P_eff_j * sqrt(q_i*q_j) * W(d) / (d**gamma * (1+F_ij))",
+    "population_formula": "P_city + sum(P_sat * exp(-lam*t) for t <= 2h)",
+    "catchment": {
+      "lam": 0.45,
+      "limit_hours": 2.0,
+      "default_access_time_h": 0.65,
+      "time_status": "scenario_assumptions_not_measured_isochrones"
+    },
+    "access_time_overrides_h": {
+      "KUF": {
+        "тольятти": 0.75
+      },
+      "GOJ": {
+        "дзержинск": 0.55
+      },
+      "GSV": {
+        "энгельс": 0.7
+      },
+      "VOG": {
+        "волжский": 0.6
+      },
+      "MRV": {
+        "пятигорск": 0.35,
+        "ессентуки": 0.55,
+        "кисловодск": 0.75
+      }
+    },
+    "range_values": [
+      0,
+      1,
+      1,
+      0
+    ],
+    "range_interpolation": "linear; zero outside [300, 3000] km; scenario, not aircraft certification",
+    "population_reconciliation": [
+      {
+        "iata": "MRV",
+        "population_mln": 0.648282,
+        "population_from_members_mln": 0.5868979999999999,
+        "population_members_gap_mln": 0.061384000000000105
+      }
+    ],
+    "linear_score_population": "unchanged_population_mln",
+    "routes_file": "routes_proof.parquet",
+    "routes_sha256": "00a45c85ed6027acd6f1bd9488b2e0d080fcabd0550b02f53b7f831cc5c08c53"
+  }
 }
