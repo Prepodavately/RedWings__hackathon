@@ -160,6 +160,9 @@ def parse_schedule_page(html: str, origin: str, dest: str, url: str) -> List[Dic
             "note": f"{flight_text}; {days}",
             "min_fare_rub": _parse_fare(buy.get_text(" ", strip=True)) if buy else None,
         })
+    if not records and not week:
+        # 200 OK без заголовка расписания — капча/антибот, а не «рейсов нет»: пара пойдёт из кэша
+        raise requests.RequestException(f"{url}: не найден заголовок расписания (возможна капча)")
     if not records:
         records.append({
             "origin_iata": origin, "dest_iata": dest, "carrier": NO_DIRECT,

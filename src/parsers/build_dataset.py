@@ -59,6 +59,16 @@ TAXI_OVERHEAD_MIN = 20         # рулёжка, взлёт, заход на п�
 WEEKS_PER_YEAR = 52
 FARE_FALLBACK = "медиана тарифов конкурентов по всем парам (нет тарифа на этой паре)"
 
+# ---- ДОПУЩЕНИЯ ЮНИТ-ЭКОНОМИКИ РЕЙСА SJ-100 (модель, не данные) ----
+FLIGHT_FIXED_COST_RUB = 385_000   # ТО, аэропортовые сборы, экипаж — на один рейс
+FUEL_COST_RUB_PER_KM = 310        # керосин ПД-8, ₽/км
+DEFAULT_FARE_RUB = 8_400.0        # FinModelInput.avg_fare_rub по умолчанию
+MIN_FARE_FLOOR_RUB = 4_500.0      # нижняя граница тарифа для точки безубыточности
+TARGET_LOAD_FACTOR_PCT = 84.0     # целевая загрузка для оценки коммерческой жизнеспособности
+CRJ200_CASK_ADV_BASE_PCT = 31.5   # преимущество SJ-100 (100 кресел) над CRJ-200 (50) по CASK на плече ~950 км
+CRJ200_CASK_ADV_SLOPE = 0.004     # снижение преимущества за каждый км отклонения от 950 км
+CRJ200_CASK_ADV_PEAK_KM = 950.0
+
 # Субсидируемые маршруты 2026 (Росавиация, «Перечень субсидируемых в 2026 году маршрутов»,
 # страница favt.gov.ru). Отобраны направления между 12 городами ТЗ; список направленный:
 # субсидируется только указанное направление А→Б.
@@ -262,6 +272,17 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
                 sub_flag = False
                 sub_check = f"нет в перечне субсидируемых маршрутов 2026 ({SUBSIDY_SOURCE})"
 
+            # Юнит-экономика рейса без госсубсидии (допущения выше)
+            flight_cost_rub = round(FLIGHT_FIXED_COST_RUB + FUEL_COST_RUB_PER_KM * d_km)
+            eff_fare = fare if (fare is not None and not pd.isna(fare)) else DEFAULT_FARE_RUB
+            belf_no_subsidy_pct = round(
+                min(100.0, flight_cost_rub / (SEATS_PER_AIRCRAFT * max(eff_fare, MIN_FARE_FLOOR_RUB)) * 100.0), 1
+            )
+            commercial_viable_no_subsidy = bool(belf_no_subsidy_pct <= TARGET_LOAD_FACTOR_PCT)
+            crj200_cask_advantage_pct = round(
+                CRJ200_CASK_ADV_BASE_PCT - CRJ200_CASK_ADV_SLOPE * abs(d_km - CRJ200_CASK_ADV_PEAK_KM), 1
+            )
+
             rows.append({
                 "origin_iata": a.iata,
                 "origin_city": a.city_name,
@@ -286,6 +307,10 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
                 "rail_text": rail_txt,
                 "launch_quarter": _launch_quarter(own_weekly or 0, comp_weekly or 0),
                 "moscow_detour_ratio": round(detour, 2),
+                "flight_cost_rub": int(flight_cost_rub),
+                "belf_no_subsidy_pct": belf_no_subsidy_pct,
+                "commercial_viable_no_subsidy": commercial_viable_no_subsidy,
+                "crj200_cask_advantage_pct": crj200_cask_advantage_pct,
                 "market_pax_year": int(round(market)),
                 "pax": int(round(pax)),
                 "freq": int(freq),
