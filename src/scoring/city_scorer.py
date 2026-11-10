@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+import re
 import warnings
 
 import numpy as np
@@ -36,6 +37,206 @@ CASE_REQUIRED_COLUMNS = frozenset(
        for prefix in ("src", "status", "period", "method")}
 )
 
+# Согласованные сценарные времена, НЕ измеренные автомобильные изохроны.
+# Ключ включает аэропорт: Волжский район Самары нельзя спутать с г. Волжским.
+AIRPORT_ACCESS_HOURS = {
+    "KUF": {"тольятти": 0.75},
+    "GOJ": {"дзержинск": 0.55},
+    "GSV": {"энгельс": 0.70},
+    "VOG": {"волжский": 0.60},
+    "MRV": {"пятигорск": 0.35, "ессентуки": 0.55, "кисловодск": 0.75},
+}
+DEFAULT_ACCESS_HOURS = 0.65
+CATCHMENT_LIMIT_HOURS = 2.0
+GRAVITY_DISTANCE_KNOTS_KM = (300.0, 800.0, 1500.0, 3000.0)
+
+
+def _finite_parameter(value: float, name: str, *, positive: bool = False) -> float:
+    try:
+        number = float(value)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"{name}: нужно конечное число") from exc
+    if isinstance(value, (bool, np.bool_)) or not np.isfinite(number) or number < 0 or (positive and number == 0):
+        raise ValueError(f"{name}: нужно {'положительное' if positive else 'неотрицательное'} конечное число")
+    return number
+
+
+def _identified_cities(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "iata" not in df:
+        raise ValueError("Нужна непустая таблица городов с iata")
+    result = df.copy(deep=True)
+    if not result["iata"].map(lambda value: isinstance(value, str)).all():
+        raise ValueError("iata должен быть строкой")
+    result["iata"] = result["iata"].str.strip().str.upper()
+    if not result["iata"].str.fullmatch(r"[A-Z]{3}").all() or result["iata"].duplicated().any():
+        raise ValueError("Нужны уникальные трёхбуквенные IATA-коды")
+    return result
+
+
+def _access_details(df: pd.DataFrame, lam: float) -> tuple[pd.DataFrame, list[float]]:
+    lam = _finite_parameter(lam, "lam")
+    cities = _identified_cities(df)
+    _number_column(cities, "population_city_mln", 0)
+    if "agglomeration_members" not in cities:
+        raise ValueError("Нет agglomeration_members; пустая строка означает явно заданное отсутствие спутников")
+    rows, totals = [], []
+    # Запятая здесь — разделитель тысяч, а не десятичная запятая.
+    population_pattern = r"(?:[0-9]{1,3}(?:[, \u00a0\u202f][0-9]{3})+|[0-9]+)"
+    member_pattern = re.compile(rf"(?P<name>.+?)\s*\((?P<population>{population_pattern})\)\s*")
+    for city in cities.itertuples(index=False):
+        if not isinstance(city.agglomeration_members, str):
+            raise ValueError(f"{city.iata}: agglomeration_members должен быть строкой; неизвестность не равна нулю")
+        total = float(city.population_city_mln)
+        seen = set()
+        members = city.agglomeration_members.split(";") if city.agglomeration_members.strip() else []
+        for member in members:
+            match = member_pattern.fullmatch(member.strip())
+            if match is None:
+                raise ValueError(f"{city.iata}: неверная запись спутника {member!r}; ожидается Название (123,456)")
+            name = match["name"].strip()
+            key = " ".join(name.casefold().replace("ё", "е").split())
+            if key in seen:
+                raise ValueError(f"{city.iata}: спутник {name!r} указан повторно")
+            seen.add(key)
+            population = int(re.sub(r"[,\s\u00a0\u202f]", "", match["population"]))
+            matches = [hours for token, hours in AIRPORT_ACCESS_HOURS.get(city.iata, {}).items() if token in key]
+            if len(matches) > 1:
+                raise ValueError(f"{city.iata}: неоднозначное время доезда для {name!r}")
+            time_h = _finite_parameter(matches[0] if matches else DEFAULT_ACCESS_HOURS, "access_time_h")
+            included = time_h <= CATCHMENT_LIMIT_HOURS
+            weight = float(np.exp(-lam * time_h)) if included else 0.0
+            contribution = population / 1_000_000 * weight
+            total += contribution
+            rows.append({
+                "iata": city.iata, "satellite": name, "satellite_population": population,
+                "access_time_h": time_h, "time_source": "scenario_override" if matches else "scenario_default",
+                "within_two_hours": included, "decay_weight": weight,
+                "effective_contribution_mln": contribution,
+            })
+        if not np.isfinite(total):
+            raise ValueError(f"{city.iata}: эффективное население не является конечным числом")
+        totals.append(total)
+    columns = ["iata", "satellite", "satellite_population", "access_time_h", "time_source",
+               "within_two_hours", "decay_weight", "effective_contribution_mln"]
+    return pd.DataFrame(rows, columns=columns), totals
+
+
+def calculate_effective_population(df: pd.DataFrame, lam: float = 0.45) -> pd.Series:
+    """P_eff = P_city + sum(P_sat * exp(-lam*t)) для t <= 2 часов, млн чел.
+
+    Численность спутников в скобках — люди, population_city_mln — миллионы.
+    Основной город учитывается целиком; времена — сценарный словарь, без GIS.
+    Возвращается Series с исходным индексом; входная таблица не изменяется.
+    Детали включены в attrs['catchment_details'] для проверки каждого слагаемого.
+    """
+    details, values = _access_details(df, lam)
+    result = pd.Series(values, index=df.index, name="effective_population_mln", dtype=float)
+    result.attrs.update({
+        "lam": float(lam), "limit_hours": CATCHMENT_LIMIT_HOURS,
+        "default_access_time_h": DEFAULT_ACCESS_HOURS,
+        "time_status": "scenario_assumptions_not_measured_isochrones",
+        "catchment_details": details.to_dict("records"),
+    })
+    return result
+
+
+def _gravity_range_weight(distances: np.ndarray) -> np.ndarray:
+    """Сценарный фильтр: 0 до 300/от 3000, 1 на 800–1500, линейные склоны."""
+    return np.interp(distances, GRAVITY_DISTANCE_KNOTS_KM, [0.0, 1.0, 1.0, 0.0], left=0.0, right=0.0)
+
+
+def calculate_gravity_matrix(
+    cities_df: pd.DataFrame, routes_df: pd.DataFrame | None = None, gamma: float = 1.15,
+) -> pd.DataFrame:
+    """G_ij = P_eff_i*P_eff_j*sqrt(q_i*q_j)*W(d)/(d**gamma*(1+F_ij)).
+
+    q = зарплата региона / средняя зарплата городов-кандидатов. P_eff измеряется
+    в млн человек; d — гаверсинус между аэропортами, км. Отсутствующие F_ij
+    и NaN принимаются за 0 по сценарию, с явной маской отсутствия наблюдения.
+    F_ij направленный: обратное направление не копируется автоматически.
+    Возвращается квадратная матрица с нулевой диагональю. Сумма строки —
+    gravity_hub_potential (в attrs и через .sum(axis=1)), не пассажиропоток.
+    Входы не меняются. Если P_eff не передано, рассчитывается при lam=0.45.
+    """
+    gamma = _finite_parameter(gamma, "gamma", positive=True)
+    cities = _identified_cities(cities_df)
+    for column, low, high in (("lat", -90, 90), ("lon", -180, 180)):
+        _number_column(cities, column, low, high)
+    _number_column(cities, "avg_wage_rub_region", 0)
+    if (cities["avg_wage_rub_region"] <= 0).any():
+        raise ValueError("avg_wage_rub_region должен быть положительным")
+    population_source = "provided_effective_population_mln"
+    if "effective_population_mln" not in cities:
+        cities["effective_population_mln"] = calculate_effective_population(cities)
+        population_source = "derived_lam_0.45"
+    _number_column(cities, "effective_population_mln", 0)
+    codes = cities["iata"].tolist()
+    index = {code: i for i, code in enumerate(codes)}
+    n = len(codes)
+    lat, lon = np.radians(cities["lat"].to_numpy()), np.radians(cities["lon"].to_numpy())
+    a = np.sin((lat[:, None] - lat[None, :]) / 2) ** 2 + np.cos(lat[:, None]) * np.cos(lat[None, :]) * np.sin((lon[:, None] - lon[None, :]) / 2) ** 2
+    distances = 2 * 6371.0 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+    range_weight = _gravity_range_weight(distances)
+    frequencies = np.zeros((n, n), dtype=float)
+    observed = np.zeros((n, n), dtype=bool)
+    if routes_df is not None and not routes_df.empty:
+        required = {"origin_iata", "dest_iata", "competitor_flights_weekly"}
+        if not required <= set(routes_df.columns):
+            raise ValueError(f"routes_df: нет колонок {sorted(required - set(routes_df.columns))}")
+        routes = routes_df.loc[:, sorted(required)].copy(deep=True)
+        for column in ("origin_iata", "dest_iata"):
+            if not routes[column].map(lambda value: isinstance(value, str)).all():
+                raise ValueError(f"{column}: нужны строковые IATA-коды")
+            routes[column] = routes[column].str.strip().str.upper()
+        routes = routes.loc[routes["origin_iata"].isin(codes) & routes["dest_iata"].isin(codes)]
+        if routes.duplicated(["origin_iata", "dest_iata"]).any():
+            raise ValueError("routes_df: повтор пары А→Б; сначала агрегируйте частоты по направлению")
+        try:
+            freq = pd.to_numeric(routes["competitor_flights_weekly"], errors="raise").astype(float)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("competitor_flights_weekly: нужны числа или NaN") from exc
+        values = freq.fillna(0).to_numpy()
+        if not np.isfinite(values).all() or (values < 0).any():
+            raise ValueError("competitor_flights_weekly: частоты должны быть конечными и неотрицательными")
+        for origin, dest, value, known in zip(routes["origin_iata"], routes["dest_iata"], values, freq.notna()):
+            frequencies[index[origin], index[dest]] = value
+            observed[index[origin], index[dest]] = bool(known)
+    population = cities["effective_population_mln"].to_numpy()
+    wages = cities["avg_wage_rub_region"].to_numpy()
+    # Масштабирование перед средним исключает переполнение суммы больших зарплат.
+    wages_scaled = wages / wages.max()
+    purchasing_power = wages_scaled / wages_scaled.mean()
+    gravity = np.zeros((n, n), dtype=float)
+    active = range_weight > 0  # также исключает диагональ и совпадающие координаты
+    try:
+        with np.errstate(over="raise", invalid="raise"):
+            mass = (population[:, None] * population[None, :]
+                    * np.sqrt(purchasing_power[:, None]) * np.sqrt(purchasing_power[None, :]))
+        with np.errstate(over="ignore", under="ignore"):
+            distance_decay = np.exp(-gamma * np.log(distances[active]))
+        gravity[active] = (mass[active] * range_weight[active] * distance_decay
+                           / (1.0 + frequencies[active]))
+    except FloatingPointError as exc:
+        raise ValueError("Переполнение гравитационного индекса; проверьте единицы населения и доходов") from exc
+    if not np.isfinite(gravity).all():
+        raise ValueError("Гравитационный индекс должен быть конечным")
+    result = pd.DataFrame(gravity, index=pd.Index(codes, name="origin_iata"),
+                          columns=pd.Index(codes, name="dest_iata"))
+    off_diagonal = ~np.eye(n, dtype=bool)
+    result.attrs.update({
+        "model": "scenario_gravity_index_not_passenger_forecast", "gamma": gamma,
+        "population_unit": "million_people", "population_source": population_source,
+        "purchasing_power_method": "regional_wage / candidate_mean_regional_wage",
+        "purchasing_power_index": dict(zip(codes, purchasing_power.tolist())),
+        "distance_method": "airport_haversine_R_6371_km", "range_knots_km": list(GRAVITY_DISTANCE_KNOTS_KM),
+        "competition_method": "directional_1_over_1_plus_F; missing_or_NaN_F_is_zero",
+        "missing_competition_pairs": int((~observed & off_diagonal).sum()),
+        "competition_observed": observed.tolist(), "competitor_flights_weekly": frequencies.tolist(),
+        "distance_km": distances.tolist(), "range_weight": range_weight.tolist(),
+        "gravity_hub_potential": result.sum(axis=1).to_dict(),
+    })
+    return result
+
 
 @dataclass
 class ScoringResult:
@@ -52,12 +253,30 @@ class ScoringResult:
         return self.table.loc[self.table["is_top3"]].copy()
 
 
-def load_features(path: str | Path = DEFAULT_DATA_PATH) -> pd.DataFrame:
-    path = Path(path)
+def load_features(path: str | Path | None = None) -> pd.DataFrame:
+    """Читать витрину; отсутствующий стандартный Parquet собрать загрузчиком Dev 1.
+
+    Загрузчик читает локальные исходные CSV, не создаёт Parquet и не подставляет
+    моки. Ошибка произвольного пути или повреждённого файла остаётся ошибкой.
+    """
+    path = Path(path) if path is not None else DEFAULT_DATA_PATH
     if not path.is_file():
+        if path.resolve() == DEFAULT_DATA_PATH.resolve() and not path.exists():
+            from src.parsers.rosstat_loader import load_rosstat_and_rosaviatsia
+
+            features = load_rosstat_and_rosaviatsia()
+            if not isinstance(features, pd.DataFrame) or features.empty:
+                raise ValueError("Загрузчик Dev 1 должен вернуть непустой DataFrame")
+            features = features.copy(deep=True)
+            features.attrs["input_source"] = "src.parsers.rosstat_loader.load_rosstat_and_rosaviatsia"
+            warnings.warn(
+                "Стандартный cities_features.parquet отсутствует; использован загрузчик Dev 1 из локальных CSV.",
+                UserWarning, stacklevel=2,
+            )
+            return features
         raise FileNotFoundError(
-            f"Нет витрины {path}. Передайте выгрузку Dev 1 через data/path или "
-            "--input; на main пока только заготовки. Моки автоматически не подставляются."
+            f"Нет витрины {path}. Проверьте путь к CSV/Parquet Dev 1; "
+            "загрузчик применяется только к отсутствующей стандартной витрине."
         )
     if path.suffix.lower() == ".csv":
         return pd.read_csv(path, dtype={"iata": str})
@@ -288,7 +507,7 @@ def score_cities(features: pd.DataFrame, weights: ScoringWeights | None = None, 
 
 
 def get_scored_cities(weights: ScoringWeights, *, data: pd.DataFrame | None = None,
-                      path: str | Path = DEFAULT_DATA_PATH, mode: Mode = "auto",
+                      path: str | Path | None = None, mode: Mode = "auto",
                       hypothesis: str = "p2p", moscow_transfer_weight: float = 0.20) -> list[CityScoreDTO]:
     """API Dev 4: полный список DTO, включая SVX; выбор нового хаба — явный hub.
 
