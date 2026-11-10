@@ -15,12 +15,13 @@ import pandas as pd
 from src.schemas.contracts import ScoringWeights
 from src.scoring.city_scorer import (
     AIRPORT_ACCESS_HOURS, DEFAULT_DATA_PATH, calculate_effective_population,
-    calculate_gravity_matrix, load_features, score_cities, weight_sensitivity,
+    calculate_gravity_matrix, calculate_scissor_hub_index, load_features, score_cities, weight_sensitivity,
 )
 
 
 def _gravity_tables(cities: pd.DataFrame, routes: pd.DataFrame | None,
-                    lam: float, gamma: float) -> tuple[dict[str, pd.DataFrame], dict]:
+                    lam: float, gamma: float, *, with_scissor: bool = False,
+                    max_detour_pct: float = 15.0) -> tuple[dict[str, pd.DataFrame], dict]:
     """Подготовить проверяемые слагаемые модели до записи каких-либо файлов."""
     cities = cities.copy(deep=True)
     population = calculate_effective_population(cities, lam)
@@ -72,9 +73,19 @@ def _gravity_tables(cities: pd.DataFrame, routes: pd.DataFrame | None,
             ["iata", "population_mln", "population_from_members_mln", "population_members_gap_mln"]].to_dict("records"),
         "linear_score_population": "unchanged_population_mln",
     })
-    return {"effective_population": cities, "catchment_details": details,
-            "gravity_matrix": matrix.reset_index(), "gravity_pairs": pairs,
-            "gravity_hub_potential": potential}, metadata
+    tables = {"effective_population": cities, "catchment_details": details,
+              "gravity_matrix": matrix.reset_index(), "gravity_pairs": pairs,
+              "gravity_hub_potential": potential}
+    if with_scissor:
+        scissor = calculate_scissor_hub_index(cities, matrix, max_detour_pct=max_detour_pct)
+        tables["scissor_hub_index"] = scissor[[
+            "iata", "city_name", "scissor_rank", "scissor_hub_index", "eligible_directed_pairs",
+            "eligible_undirected_pairs", "positive_gravity_directed_pairs", "valid_directed_pairs",
+            "eligible", "exclusion_reason",
+        ]]
+        tables["scissor_pairs"] = pd.DataFrame(scissor.attrs["pair_details"])
+        metadata["scissor"] = {key: value for key, value in scissor.attrs.items() if key != "pair_details"}
+    return tables, metadata
 
 
 def main() -> int:
@@ -92,9 +103,13 @@ def main() -> int:
     parser.add_argument("--routes", type=Path, help="routes_proof.parquet/CSV; без файла F=0 с пометкой допущения")
     parser.add_argument("--lam", type=float, default=0.45, help="Затухание по времени доезда, 1/час")
     parser.add_argument("--gamma", type=float, default=1.15, help="Степень затухания гравитации по расстоянию")
+    parser.add_argument("--with-scissor", action="store_true", help="Индекс транзитного перекрёстка; требует --with-gravity")
+    parser.add_argument("--max-detour-pct", type=float, default=15.0, help="Крюк строго менее этого процента; сценарное допущение")
     args = parser.parse_args()
     if args.routes is not None and not args.with_gravity:
         parser.error("--routes используется вместе с --with-gravity")
+    if args.with_scissor and not args.with_gravity:
+        parser.error("--with-scissor используется вместе с --with-gravity")
     try:
         values = json.loads(args.weights_json.read_text(encoding="utf-8")) if args.weights_json else {}
         weights = ScoringWeights(**values)
@@ -108,7 +123,10 @@ def main() -> int:
         extra_tables, gravity_metadata = {}, None
         if args.with_gravity:
             routes = load_features(args.routes) if args.routes is not None else None
-            extra_tables, gravity_metadata = _gravity_tables(result.table, routes, args.lam, args.gamma)
+            extra_tables, gravity_metadata = _gravity_tables(
+                result.table, routes, args.lam, args.gamma,
+                with_scissor=args.with_scissor, max_detour_pct=args.max_detour_pct,
+            )
             gravity_metadata["routes_file"] = args.routes.name if args.routes is not None else None
             gravity_metadata["routes_sha256"] = hashlib.sha256(args.routes.read_bytes()).hexdigest() if args.routes is not None else None
     except (ValueError, TypeError, FileNotFoundError) as exc:

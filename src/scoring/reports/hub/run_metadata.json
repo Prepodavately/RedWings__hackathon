@@ -12,7 +12,7 @@
   "input_sha256": "33ae5dbf2009e715613e2c2b0bcb9c009329067e9bc28924d422ed1883ceb393",
   "input_hash_kind": "file_bytes",
   "input_snapshot": null,
-  "created_at_utc": "2026-11-10T04:43:18.766792+00:00",
+  "created_at_utc": "2026-11-10T15:56:22.900946+00:00",
   "requested_weights": {
     "w_population": 0.3,
     "w_hub_distance": 0.2,
@@ -146,6 +146,23 @@
       }
     ],
     "linear_score_population": "unchanged_population_mln",
+    "scissor": {
+      "model": "scenario_geometric_transit_index_not_economic_proof",
+      "formula": "sum(G_ij for i != j, i != h, j != h if (d_ih+d_hj)/d_ij < 1+p/100)",
+      "max_detour_pct": 15.0,
+      "ratio_limit": 1.15,
+      "boundary_tolerance": 1e-12,
+      "comparison": "strict_less_than",
+      "distance_method": "airport_haversine_R_6371_km",
+      "pair_accounting": "directed; each origin-destination direction counted once per hub",
+      "distance_ratio_undefined": "zero direct distance: excluded",
+      "candidate_count": 12,
+      "limitations": [
+        "Индекс использует геодезические расстояния; фактические трассы и время посадки не учтены.",
+        "Вклад G_ij описывает исходную пару; ограничения каждого плеча и расписание стыковок проверяются отдельно.",
+        "Спрос, загрузка, число бортов и экономия на ангаре этим индексом не определяются."
+      ]
+    },
     "routes_file": "routes_proof.parquet",
     "routes_sha256": "00a45c85ed6027acd6f1bd9488b2e0d080fcabd0550b02f53b7f831cc5c08c53"
   }

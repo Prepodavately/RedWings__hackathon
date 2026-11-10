@@ -1,16 +1,16 @@
 {
-  "checked_at_utc": "2026-11-10T04:49:21.263090+00:00",
-  "scope": "Текущая ветка Dev 2 на main 5a526c0; скоринг, охват, гравитация, экспорт и контракт DTO. Проверка чужих UI/финансовых веток из прошлого ревью не переносится в этот результат.",
+  "checked_at_utc": "2026-11-10T15:57:39.855708+00:00",
+  "scope": "Dev 2 на main e195757: скоринг, охват, гравитация, транзитный индекс и контракты; экономическая модель ангара не проверялась.",
   "checks": {
     "pytest": {
       "command": "python -m pytest src/scoring/tests tests/test_contracts.py -q",
-      "passed": 86,
+      "passed": 107,
       "failed": 0
     },
     "notebook": {
       "path": "notebooks/02_scoring_check.ipynb",
-      "total_cells": 17,
-      "executed_code_cells": 8,
+      "total_cells": 24,
+      "executed_code_cells": 11,
       "errors": 0
     },
     "reports": {
@@ -54,7 +54,39 @@
       }
     },
     "input_hashes": "matched_reference/current_data.json",
-    "diff_check": "passed"
+    "diff_check": "passed",
+    "scissor": {
+      "hub": {
+        "max_detour_pct": 15.0,
+        "combinations": 1320,
+        "sum_check": "passed",
+        "top3_all": [
+          "UFA",
+          "KUF",
+          "SVX"
+        ],
+        "top3_eligible": [
+          "UFA",
+          "KUF",
+          "CEK"
+        ]
+      },
+      "p2p": {
+        "max_detour_pct": 15.0,
+        "combinations": 1320,
+        "sum_check": "passed",
+        "top3_all": [
+          "UFA",
+          "KUF",
+          "SVX"
+        ],
+        "top3_eligible": [
+          "UFA",
+          "KUF",
+          "SVX"
+        ]
+      }
+    }
   },
   "runtime": {
     "python": "3.12.14",
@@ -66,6 +98,7 @@
   "limitations": [
     "Гравитация — сценарный индекс, не пассажиропоток; времена доезда не измерены.",
     "Исходные данные Dev 1 не перепроверены по внешним первоисточникам.",
-    "У MRV разница между агломерацией и суммой компонентов 61 384 человека."
+    "У MRV разница между агломерацией и суммой компонентов 61 384 человека.",
+    "Scissor Hub: геодезический индекс не доказывает экономию 310 млн рублей; необходим отдельный расчёт CAPEX/OPEX и требований ТО."
   ]
 }
