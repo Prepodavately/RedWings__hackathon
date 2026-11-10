@@ -8,12 +8,12 @@
 Единицы: частота — пары рейсов/неделю; F = маршруты * частота * 2 * 52.
 Стоимость 645/635 тыс. руб. применяется к ОДНОМУ плечу, согласно формулам
 ТЗ (слова «парного плеча» в его тексте неоднозначны). При изменении числа
-кресел стоимость рейса хаба масштабируется пропорционально seats/100
-по уточненному ТЗ от 10.11.2026. Формулы P2P пока из предыдущего ТЗ.
+кресел стоимость рейса обеих стратегий масштабируется как seats/100.
+Формулы, ограничения и округления — по полному ТЗ от 10.11.2026.
 Выручка включает билетную выручку и сценарные субсидии. EBITDAR = выручка
 минус модельные операционные расходы, до аренды/амортизации/процентов/налогов.
 BELF — фактическая загрузка, не значение входного ползунка до синергии;
-для хаба показатель ограничен 55..96% по уточненному ТЗ. Это ограниченный
+показатель ограничен 55..96% для хаба и 52..96% для P2P по ТЗ. Это ограниченный
 индикатор для UI, а не точный порог вне этих границ; убыточность видна в EBITDAR.
 Иллюстративные 81.4%/63.5% из ТЗ не используются как заданные ответы.
 
@@ -27,11 +27,13 @@ top_cities проверяет выбор хаба; DTO не содержит м�
 Доказательства спроса и частот на каждом маршруте поставляет участник №1.
 """
 
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from math import isfinite
-from typing import Iterable, List, Optional, Tuple
+from typing import List, Sequence
 
-from src.models.sj100_fleet import calculate_required_sj100_fleet
+from src.models.sj100_fleet import (
+    P2P_FLEET_FACTOR, ROUND_TRIPS_PER_AIRCRAFT_WEEK, calculate_required_sj100_fleet,
+)
 from src.schemas.contracts import (
     CityScoreDTO,
     ComparisonBundleDTO,
@@ -95,67 +97,47 @@ def _effective_load(params: FinModelInput, code: HypothesisCode) -> float:
     else:
         adjustment = 2.4 if freq <= 5 else -0.8
     load = (params.load_factor_pct + adjustment) * _SCENARIOS[params.scenario].demand_factor
-    if code == "hub":
-        return round(min(MAX_LOAD_FACTOR_PCT, max(52.0, load)), 1)
-    return max(0.0, min(MAX_LOAD_FACTOR_PCT, load))
+    return round(min(95.0, max(52.0 if code == "hub" else 54.0, load)), 1)
 
 
-
-def _calculate(
-    params: FinModelInput, code: HypothesisCode, effective_load: Optional[float] = None
-) -> HypothesisResultDTO:
+def _calculate(params: FinModelInput, code: HypothesisCode) -> HypothesisResultDTO:
     scenario = _SCENARIOS[params.scenario]
     is_hub = code == "hub"
     flights = params.active_routes_count * params.weekly_freq_per_route * 2 * WEEKS_PER_YEAR
     seats = flights * params.aircraft_seats
-    load = _effective_load(params, code) if effective_load is None else effective_load
-    passengers = round(seats * load / 100)
-    fare = params.avg_fare_rub * (0.935 if is_hub else 1.055)
-    if is_hub:
-        fare = round(fare)
-    subsidy = flights * (0.45 if is_hub else 0.65) * scenario.subsidy_per_flight_rub
-    fixed_cost = scenario.hub_fixed_cost_rub if is_hub else 115_000_000.0
-    seat_factor = params.aircraft_seats / 100 if is_hub else 1.0
-    cost = flights * (645_000 if is_hub else 635_000) * scenario.cost_factor * seat_factor + fixed_cost
-    revenue = passengers * fare + subsidy
-    if is_hub:
-        cost = round(cost / 1_000_000, 1) * 1_000_000
-        revenue = round(revenue / 1_000_000, 1) * 1_000_000
-    ebitdar_mln = (revenue - cost) / 1_000_000
-    margin = ebitdar_mln / max(1.0, revenue / 1_000_000) * 100
-    share = passengers / TOTAL_RF_MARKET_PAX_2025 * 100
-    belf = max(0.0, (cost - subsidy) / max(1.0, seats * fare) * 100)
-    if is_hub:
-        ebitdar_mln = round(ebitdar_mln, 1)
-        margin = round(ebitdar_mln / max(1.0, revenue / 1_000_000) * 100, 1)
-        share = round(share, 3)
-        belf = round(min(96.0, max(55.0, belf)), 1)
+    passengers = int(round(seats * (_effective_load(params, code) / 100.0)))
+    fare = round(params.avg_fare_rub * (0.935 if is_hub else 1.055))
+    subsidy_mln = flights * (0.45 if is_hub else 0.65) * scenario.subsidy_per_flight_rub / 1e6
+    fixed_cost_mln = scenario.hub_fixed_cost_rub / 1e6 if is_hub else 115.0
+    cost_per_flight = (645_000 if is_hub else 635_000) * scenario.cost_factor * (params.aircraft_seats / 100.0)
+    cost_mln = round(flights * cost_per_flight / 1e6 + fixed_cost_mln, 1)
+    revenue_mln = round(passengers * fare / 1e6 + subsidy_mln, 1)
+    ebitdar_mln = round(revenue_mln - cost_mln, 1)
+    belf = (cost_mln - subsidy_mln) * 1e6 / max(1.0, seats * fare) * 100.0
     return HypothesisResultDTO(
         code=code,
         title=(f"Гипотеза А: Региональный хаб ({params.hub_iata})" if is_hub
                else "Гипотеза Б: Прямые межрегиональные рейсы (P2P)"),
         annual_passengers=passengers,
-        annual_revenue_mln_rub=revenue / 1_000_000,
+        annual_revenue_mln_rub=revenue_mln,
         ebitdar_mln_rub=ebitdar_mln,
-        ebitdar_margin_pct=margin,
-        market_share_delta_pct=share,
+        ebitdar_margin_pct=round(ebitdar_mln / max(1.0, revenue_mln) * 100.0, 1),
+        market_share_delta_pct=round(passengers / TOTAL_RF_MARKET_PAX_2025 * 100.0, 3),
         required_aircraft_sj100=calculate_required_sj100_fleet(
             params.active_routes_count, params.weekly_freq_per_route, is_hub
         ),
-        breakeven_load_factor_pct=belf,
+        breakeven_load_factor_pct=round(min(96.0, max(55.0 if is_hub else 52.0, belf)), 1),
     )
 
 
 def evaluate_hypotheses(
     params: FinModelInput, top_cities: List[CityScoreDTO]
 ) -> ComparisonBundleDTO:
-    """Сравнить обе стратегии в выбранном сценарии, не меняя входные DTO.
+    """Контрактная экономика: score = 0.45 * revenue + 0.55 * EBITDAR.
 
-    Победитель: максимальная доля рынка среди вариантов с EBITDAR >= 0;
-    затем EBITDAR, меньший флот и P2P при полном равенстве. Если оба убыточны,
-    обязательное поле winner обозначает вариант с меньшим убытком, а rationale
-    явно запрещает трактовать это как рекомендацию запуска.
-    Некорректные входы/выбор хаба вне переданного списка вызывают ValueError.
+    При равенстве побеждает P2P. Этот критерий сам по себе не гарантирует
+    прибыльности. Выбор хаба разрешен из всего переданного списка городов,
+    независимо от линейного is_top3; чужой рейтинг/DTO не изменяется.
     """
     _validate_params(params)
     if not top_cities:
@@ -164,59 +146,212 @@ def evaluate_hypotheses(
     if hub_city is None:
         raise ValueError(f"Город hub_iata={params.hub_iata!r} не найден в переданном списке городов")
     hub, p2p = _calculate(params, "hub"), _calculate(params, "p2p")
-    viable = [result for result in (hub, p2p) if result.ebitdar_mln_rub >= 0]
-    if viable:
-        winner = max(viable, key=lambda result: (
-            result.market_share_delta_pct, result.ebitdar_mln_rub,
-            -result.required_aircraft_sj100, result.code == "p2p",
-        ))
-        decision = "Максимальный прирост доли рынка среди вариантов с неотрицательным EBITDAR."
-    else:
-        winner = max((hub, p2p), key=lambda result: (
-            result.ebitdar_mln_rub, result.market_share_delta_pct,
-            -result.required_aircraft_sj100, result.code == "p2p",
-        ))
-        decision = ("Обе стратегии убыточны: запуск не рекомендуется. "
-                    "winner обозначает только вариант с меньшим убытком.")
+    hub_score = hub.annual_revenue_mln_rub * .45 + hub.ebitdar_mln_rub * .55
+    p2p_score = p2p.annual_revenue_mln_rub * .45 + p2p.ebitdar_mln_rub * .55
+    winner = p2p if p2p_score >= hub_score else hub
+    hub_fixed = _SCENARIOS[params.scenario].hub_fixed_cost_rub / 1e6
     rationale = (
-        f"{decision} {winner.title}: {winner.annual_passengers:,} пасс./год, "
-        f"+{winner.market_share_delta_pct:.3f} п.п. рынка, "
-        f"EBITDAR {winner.ebitdar_mln_rub:.2f} млн ₽, "
-        f"потребность {winner.required_aircraft_sj100} SJ-100. "
-        f"Сценарий: {params.scenario}; частота: {params.weekly_freq_per_route} "
-        "пар рейсов/неделю. Расчет на полный год после поставок не ранее 2027-H2; "
-        "субсидии и спрос — допущения, требующие проверки по маршрутам."
+        f"По критерию 0.45 × выручка + 0.55 × EBITDAR выбран {winner.code.upper()}. "
+        f"Хаб: {hub_city.city_name} ({hub_city.iata}, ранг {hub_city.rank}, "
+        f"балл {hub_city.total_score:.2f}). "
+        f"EBITDAR: хаб {hub.ebitdar_mln_rub:.1f}, P2P {p2p.ebitdar_mln_rub:.1f} млн ₽; "
+        f"BELF: {hub.breakeven_load_factor_pct:.1f}% против {p2p.breakeven_load_factor_pct:.1f}%. "
+        f"Постоянные расходы: хаб {hub_fixed:.0f} против P2P 115 млн ₽/год "
+        f"(экономия {hub_fixed - 115:.0f} млн ₽); флот P2P {p2p.required_aircraft_sj100} "
+        f"против хаба {hub.required_aircraft_sj100} SJ-100. "
+        f"Сценарий {params.scenario}; полный год эксплуатации после поставок не ранее 2027-H2. "
+        "Спрос, субсидии и утилизация — допущения для проверки по маршрутам."
     )
     if not hub_city.is_top3:
-        rationale += f" Хаб {hub_city.iata}: ранг {hub_city.rank} в переданном рейтинге; выбор вне Топ-3 допустим."
-    return ComparisonBundleDTO(hub=hub, p2p=p2p, winner=winner.code, rationale=rationale)
+        rationale += " Выбор вне линейного Топ-3 допустим."
+    if winner.ebitdar_mln_rub < 0:
+        rationale += " Выбранный вариант убыточен: запуск не рекомендуется без пересмотра экономики."
+    return ComparisonBundleDTO(hub, p2p, winner.code, rationale)
 
 
 def simulate_fare_elasticity_curve(
     params: FinModelInput,
-    hypothesis: HypothesisCode = "p2p",
-    fares: Optional[Iterable[float]] = None,
-) -> List[Tuple[float, float, float, float]]:
-    """Точки (базовый тариф ₽, фактическая загрузка %, выручка млн ₽, EBITDAR млн ₽).
+    top_cities: List[CityScoreDTO],
+    fares_rub: Sequence[float] = (5500, 6500, 7500, 8400, 9500, 10500, 11500, 12500, 13500),
+    elasticity: float = -0.65,
+) -> List[dict]:
+    """Линейная эластичность L(p)=L0*(1+elasticity*(p/p0-1)).
 
-    L(p) = L(p0) * (p/p0)**(-0.65), ограниченная 0..95%. L(p0) уже включает
-    синергию и сценарий, повторно они не применяются. Сетка по умолчанию:
-    5500..13500 с шагом 500 плюс текущий тариф. Гипотеза по умолчанию — P2P.
-    Эластичность постоянная; это не парабола и не гарантия внутреннего оптимума.
+    Пересчитанная входная загрузка ограничена 50..98% контрактом; синергия,
+    сценарий и пределы 52/54..95% применяются evaluate_hypotheses один раз.
+    effective_load_factor_pct — пересчитанный вход, загрузки отдельных
+    стратегий возвращаются отдельно. Плато на границах допустимо.
+    Максимум EBITDAR определяется по точкам, а не подгоняется под 8400..9500.
     """
-    _validate_params(params)
-    if hypothesis not in ("hub", "p2p"):
-        raise ValueError("hypothesis должен быть 'hub' или 'p2p'")
-    if fares is None:
-        fares = sorted(set(range(5500, 13501, 500)) | {params.avg_fare_rub})
-    reference_load = _effective_load(params, hypothesis)
+    evaluate_hypotheses(params, top_cities)
+    _finite_number("elasticity", elasticity)
+    if elasticity > 0:
+        raise ValueError("elasticity должна быть неположительной")
     points = []
-    for fare in fares:
-        _finite_number("fare", fare)
-        if fare <= 0:
-            raise ValueError("fare должен быть положительным")
-        load = min(MAX_LOAD_FACTOR_PCT,
-                   reference_load * (fare / params.avg_fare_rub) ** FARE_ELASTICITY)
-        result = _calculate(replace(params, avg_fare_rub=fare), hypothesis, load)
-        points.append((fare, load, result.annual_revenue_mln_rub, result.ebitdar_mln_rub))
+    for fare in fares_rub:
+        _finite_number("fare_rub", fare)
+        if not 3500 <= fare <= 25000:
+            raise ValueError("fare_rub должен быть в диапазоне 3500..25000")
+        load = min(98.0, max(50.0, params.load_factor_pct *
+                            (1 + elasticity * (fare / params.avg_fare_rub - 1))))
+        adjusted = replace(params, avg_fare_rub=fare, load_factor_pct=load)
+        result = evaluate_hypotheses(adjusted, top_cities)
+        points.append({
+            "fare_rub": fare, "effective_load_factor_pct": load,
+            "hub_effective_load_factor_pct": _effective_load(adjusted, "hub"),
+            "p2p_effective_load_factor_pct": _effective_load(adjusted, "p2p"),
+            "hub_revenue_mln_rub": result.hub.annual_revenue_mln_rub,
+            "hub_ebitdar_mln_rub": result.hub.ebitdar_mln_rub,
+            "p2p_revenue_mln_rub": result.p2p.annual_revenue_mln_rub,
+            "p2p_ebitdar_mln_rub": result.p2p.ebitdar_mln_rub,
+            "winner": result.winner,
+        })
     return points
+
+
+def evaluate_digital_one_click_impact(
+    params: FinModelInput, top_cities: List[CityScoreDTO], *,
+    enable_virtual_interline: bool = True,
+    enable_one_click_ancillary: bool = True,
+    enable_auto_disruption_recovery: bool = True,
+) -> dict:
+    """Сценарный эффект цифровизации поверх округленной базовой P2P-модели.
+
+    Interline: +3 п.п. к фактической загрузке (потолок 95%), 18 млн затрат.
+    Ancillary: +650 ₽ выручки и -180 ₽ затрат на каждого итогового пассажира.
+    Recovery: -22.5 млн затрат * routes/10. Дополнительных субсидий нет.
+    Порядок атрибуции interline -> ancillary -> recovery: перекрестный эффект
+    ancillary на новых пассажиров входит только в ancillary, без двойного счета.
+    Все коэффициенты — гипотезы ТЗ; подтвержденные эффекты продукта отсутствуют.
+    """
+    flags = (enable_virtual_interline, enable_one_click_ancillary, enable_auto_disruption_recovery)
+    if any(not isinstance(flag, bool) for flag in flags):
+        raise ValueError("Переключатели цифровых сервисов должны быть bool")
+    base = evaluate_hypotheses(params, top_cities).p2p
+    flights = params.active_routes_count * params.weekly_freq_per_route * 2 * WEEKS_PER_YEAR
+    capacity = flights * params.aircraft_seats
+    load = min(95.0, _effective_load(params, "p2p") + (3.0 if enable_virtual_interline else 0))
+    pax = round(capacity * (load / 100.0))
+    fare = round(params.avg_fare_rub * 1.055)
+    interline_cost = 18.0 if enable_virtual_interline else 0.0
+    extra_tickets = (pax - base.annual_passengers) * fare / 1e6
+    ancillary = pax * 650 / 1e6 if enable_one_click_ancillary else 0.0
+    distribution_saving = pax * 180 / 1e6 if enable_one_click_ancillary else 0.0
+    recovery = 22.5 * params.active_routes_count / 10 if enable_auto_disruption_recovery else 0.0
+    uplift = {
+        "virtual_interline": extra_tickets - interline_cost,
+        "one_click_ancillary": ancillary + distribution_saving,
+        "auto_disruption_recovery": recovery,
+    }
+    revenue = base.annual_revenue_mln_rub + extra_tickets + ancillary
+    cost = (base.annual_revenue_mln_rub - base.ebitdar_mln_rub
+            + interline_cost - distribution_saving - recovery)
+    profit = revenue - cost
+    subsidy = flights * .65 * _SCENARIOS[params.scenario].subsidy_per_flight_rub / 1e6
+    # Savings 180 ₽/пасс. зависят от загрузки: учитываются в знаменателе BELF.
+    fixed_cost = base.annual_revenue_mln_rub - base.ebitdar_mln_rub + interline_cost - recovery
+    unit_contribution = fare + (830 if enable_one_click_ancillary else 0)
+    raw_belf = max(0.0, (fixed_cost - subsidy) * 1e6 / (capacity * unit_contribution) * 100)
+    digital = asdict(base)
+    if any(flags):
+        digital.update(
+            annual_passengers=pax,
+            annual_revenue_mln_rub=round(revenue, 6),
+            ebitdar_mln_rub=round(profit, 6),
+            ebitdar_margin_pct=round(profit / max(1.0, revenue) * 100, 1),
+            breakeven_load_factor_pct=round(min(96.0, max(52.0, raw_belf)), 1),
+            market_share_delta_pct=round(pax / TOTAL_RF_MARKET_PAX_2025 * 100, 3),
+        )
+    return {
+        "p2p_base": asdict(base), "p2p_digital": digital,
+        "ebitdar_uplift_mln_rub": {key: round(value, 6) for key, value in uplift.items()},
+        "total_ebitdar_uplift_mln_rub": round(sum(uplift.values()), 6),
+        "digital_effective_load_factor_pct": load,
+        "digital_belf_unclipped_pct": raw_belf,
+        "assumptions": "Эффекты ТЗ, годовые; interline +3 п.п./18 млн; ancillary 650+180 ₽/пасс.; recovery 22.5 млн на 10 маршрутов.",
+    }
+
+
+# Целевые пороги и планы — допущения команды, не гарантии места/поставок.
+S7_REFERENCE_MARKET_SHARE_PCT = 11.8
+URAL_REFERENCE_MARKET_SHARE_PCT = 8.5
+
+
+def project_path_to_top2_airline(params: FinModelInput, top_cities: List[CityScoreDTO]) -> List[dict]:
+    """Обратный расчет масштаба: цель пассажиров -> частота -> проверка флота.
+
+    Волна 1 — исходный пилот без цифровых надбавок. Для волн 2/3 минимальная
+    частота >= входной, достигающая цели 9.15/14.15 млн, ищется в 1..21.
+    Смешанный флот — допущение: SJ-100=params.aircraft_seats, Ту-214=210,
+    МС-21=211 кресел. Средняя вместимость округляется; модель SJ-100 линейно
+    переносится на нее как приближение, не как доказанная экономика Ту/МС.
+    Масштабирование финансов и пассажиров идет из шаблона входной сети
+    пропорционально числу маршрутов (включая фиксированные расходы).
+    Результат — годовой темп после полного развертывания, не факт за период.
+    fleet_total — план выделенного флота, fleet_required_model — расчетная
+    потребность по принятой утилизации. fleet_gap>0 запрещает трактовать
+    расчетную долю/ранг как обеспеченный прогноз. Цели не подменяют результаты.
+    База 28 бортов не суммируется с выделенным флотом волн 1–3; это отдельная
+    существующая сеть, ее выручка не известна и в projected_* не включена.
+    """
+    pilot = evaluate_hypotheses(params, top_cities).p2p
+    rows = [{
+        "wave_id": 0, "period": "2025", "title": "База командного сценария",
+        "routes_count": 0, "fleet_total": 28, "fleet_breakdown": {"existing": 28},
+        "incremental_pax_mln": 0.0, "total_pax_mln": RED_WINGS_BASE_PAX_2025 / 1e6,
+        "market_share_pct": round(RED_WINGS_BASE_PAX_2025 / TOTAL_RF_MARKET_PAX_2025 * 100, 2),
+        "projected_revenue_bln_rub": None, "projected_ebitdar_bln_rub": None,
+        "market_rank_rf": None, "rank_note": "Топ-5/6 — оценка ТЗ; полного рейтинга нет",
+    }]
+    plans = [
+        (1, "2026–2027", "Ядро Поволжье — Урал", params.active_routes_count,
+         {"SJ-100": pilot.required_aircraft_sj100}, None),
+        (2, "2028–2029", "Федеральная P2P-сеть + Virtual Interline", 65,
+         {"SJ-100": 36, "Ту-214": 12}, 9.15),
+        (3, "2030", "Цель: авиаперевозчик №2", 120,
+         {"SJ-100": 55, "Ту-214": 15, "МС-21": 12}, 14.15),
+    ]
+    for wave, period, title, routes, fleet, target in plans:
+        fleet_total = sum(fleet.values())
+        seat_map = {"SJ-100": params.aircraft_seats, "Ту-214": 210, "МС-21": 211}
+        average_seats = round(sum(seat_map[k] * count for k, count in fleet.items()) / fleet_total)
+        scale = routes / params.active_routes_count
+        frequency = params.weekly_freq_per_route
+        metrics = asdict(pilot)
+        if wave > 1:
+            for frequency in range(params.weekly_freq_per_route, 22):
+                template = replace(params, aircraft_seats=average_seats, weekly_freq_per_route=frequency)
+                metrics = evaluate_digital_one_click_impact(template, top_cities)["p2p_digital"]
+                if (RED_WINGS_BASE_PAX_2025 + metrics["annual_passengers"] * scale) / 1e6 >= target:
+                    break
+        increment = metrics["annual_passengers"] * scale
+        total = RED_WINGS_BASE_PAX_2025 + increment
+        share = total / TOTAL_RF_MARKET_PAX_2025 * 100
+        needed = calculate_required_sj100_fleet(routes, frequency, False)
+        gap = max(0, needed - fleet_total)
+        supported_routes = min(routes, int(fleet_total * ROUND_TRIPS_PER_AIRCRAFT_WEEK
+                                           / (frequency * P2P_FLEET_FACTOR)))
+        constrained_total = RED_WINGS_BASE_PAX_2025 + increment * supported_routes / routes
+        # Полный рейтинг не известен: 2/3 — условно при неизменных конкурентах.
+        rank = 2 if share > S7_REFERENCE_MARKET_SHARE_PCT else 3 if share > URAL_REFERENCE_MARKET_SHARE_PCT else None
+        rows.append({
+            "wave_id": wave, "period": period, "title": title,
+            "routes_count": routes, "fleet_total": fleet_total, "fleet_breakdown": fleet,
+            "incremental_pax_mln": round(increment / 1e6, 6), "total_pax_mln": round(total / 1e6, 6),
+            "market_share_pct": round(share, 3),
+            "projected_revenue_bln_rub": round(metrics["annual_revenue_mln_rub"] * scale / 1000, 6),
+            "projected_ebitdar_bln_rub": round(metrics["ebitdar_mln_rub"] * scale / 1000, 6),
+            "market_rank_rf": rank, "rank_is_conditional": True,
+            "weekly_freq_per_route": frequency, "average_aircraft_seats": average_seats,
+            "fleet_required_model": needed, "fleet_gap": gap,
+            "fleet_capacity_feasible": gap == 0,
+            "fleet_supported_routes_count": supported_routes,
+            "fleet_constrained_total_pax_mln": round(constrained_total / 1e6, 6),
+            "fleet_constrained_market_share_pct": round(constrained_total / TOTAL_RF_MARKET_PAX_2025 * 100, 3),
+            "target_total_pax_mln": target,
+            "target_reached": target is None or total / 1e6 >= target,
+            "digital_enabled": wave > 1,
+            "financial_scope": "Только новая сеть, годовой темп; база 2025 не включена",
+            "assumptions": "Постоянный рынок 108.9 млн, S7 11.8%, Уральские 8.5%; нет каннибализации; поставки и спрос не подтверждены; до 2027-H2 только перераспределение существующего флота.",
+        })
+    return rows
