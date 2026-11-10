@@ -1,0 +1,104 @@
+{
+  "checked_at_utc": "2026-11-10T15:57:39.855708+00:00",
+  "scope": "Dev 2 на main e195757: скоринг, охват, гравитация, транзитный индекс и контракты; экономическая модель ангара не проверялась.",
+  "checks": {
+    "pytest": {
+      "command": "python -m pytest src/scoring/tests tests/test_contracts.py -q",
+      "passed": 107,
+      "failed": 0
+    },
+    "notebook": {
+      "path": "notebooks/02_scoring_check.ipynb",
+      "total_cells": 24,
+      "executed_code_cells": 11,
+      "errors": 0
+    },
+    "reports": {
+      "hub": {
+        "top3": {
+          "KUF": 77.39,
+          "KZN": 73.78,
+          "UFA": 64.54
+        },
+        "mode": "exploratory",
+        "matrix_shape": [
+          12,
+          12
+        ],
+        "directed_pairs": 132,
+        "missing_competition_pairs": 0,
+        "gravity_top3_all": [
+          "GOJ",
+          "KUF",
+          "CEK"
+        ]
+      },
+      "p2p": {
+        "top3": {
+          "KUF": 77.39,
+          "SVX": 77.27,
+          "KZN": 73.78
+        },
+        "mode": "exploratory",
+        "matrix_shape": [
+          12,
+          12
+        ],
+        "directed_pairs": 132,
+        "missing_competition_pairs": 0,
+        "gravity_top3_all": [
+          "GOJ",
+          "KUF",
+          "CEK"
+        ]
+      }
+    },
+    "input_hashes": "matched_reference/current_data.json",
+    "diff_check": "passed",
+    "scissor": {
+      "hub": {
+        "max_detour_pct": 15.0,
+        "combinations": 1320,
+        "sum_check": "passed",
+        "top3_all": [
+          "UFA",
+          "KUF",
+          "SVX"
+        ],
+        "top3_eligible": [
+          "UFA",
+          "KUF",
+          "CEK"
+        ]
+      },
+      "p2p": {
+        "max_detour_pct": 15.0,
+        "combinations": 1320,
+        "sum_check": "passed",
+        "top3_all": [
+          "UFA",
+          "KUF",
+          "SVX"
+        ],
+        "top3_eligible": [
+          "UFA",
+          "KUF",
+          "SVX"
+        ]
+      }
+    }
+  },
+  "runtime": {
+    "python": "3.12.14",
+    "pandas": "2.2.3",
+    "numpy": "2.1.3",
+    "pytest": "8.3.4",
+    "nbformat": "5.11.1"
+  },
+  "limitations": [
+    "Гравитация — сценарный индекс, не пассажиропоток; времена доезда не измерены.",
+    "Исходные данные Dev 1 не перепроверены по внешним первоисточникам.",
+    "У MRV разница между агломерацией и суммой компонентов 61 384 человека.",
+    "Scissor Hub: геодезический индекс не доказывает экономию 310 млн рублей; необходим отдельный расчёт CAPEX/OPEX и требований ТО."
+  ]
+}

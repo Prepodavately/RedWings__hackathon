@@ -1,0 +1,13 @@
+iata,city_name,rank,result_status,top3_frequency,best_rank,worst_rank,mean_rank,n_samples
+KUF,Самара,1,preliminary,1.0,1,2,1.457,2000
+SVX,Екатеринбург,2,preliminary,1.0,1,2,1.543,2000
+KZN,Казань,3,preliminary,1.0,3,3,3.0,2000
+UFA,Уфа,4,preliminary,0.0,4,4,4.0,2000
+PEE,Пермь,5,preliminary,0.0,5,5,5.0,2000
+CEK,Челябинск,6,preliminary,0.0,6,7,6.019,2000
+GOJ,Нижний Новгород,7,preliminary,0.0,6,7,6.981,2000
+VOG,Волгоград,8,preliminary,0.0,8,9,8.2845,2000
+TJM,Тюмень,9,preliminary,0.0,8,9,8.7155,2000
+OMS,Омск,10,preliminary,0.0,10,11,10.408,2000
+MRV,Минеральные Воды,11,preliminary,0.0,10,12,10.6185,2000
+GSV,Саратов,12,preliminary,0.0,11,12,11.9735,2000

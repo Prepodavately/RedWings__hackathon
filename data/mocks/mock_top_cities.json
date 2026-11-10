@@ -1,0 +1,5 @@
+[
+  {"iata": "KUF", "city_name": "Самара", "region": "ПФО", "population_mln": 2.74, "airport_pax_mln": 3.58, "total_score": 89.26, "rank": 1, "is_top3": true},
+  {"iata": "GOJ", "city_name": "Нижний Новгород", "region": "ПФО", "population_mln": 2.08, "airport_pax_mln": 1.48, "total_score": 73.91, "rank": 2, "is_top3": true},
+  {"iata": "SVX", "city_name": "Екатеринбург", "region": "УФО", "population_mln": 2.24, "airport_pax_mln": 7.95, "total_score": 71.40, "rank": 3, "is_top3": true}
+]
