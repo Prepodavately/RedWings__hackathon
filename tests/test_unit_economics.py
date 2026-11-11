@@ -9,6 +9,7 @@ import pytest
 from src.models.unit_economics import (
     evaluate_route_level_economics, evaluate_scissor_hub_economics,
     build_strategy_switching_matrix, run_monte_carlo_stress_test,
+    run_financial_monte_carlo, evaluate_svx_kuf_cannibalization, get_assumptions_audit_table,
 )
 import pandas as pd
 
@@ -595,3 +596,172 @@ def test_stress_subsidies_and_variable_costs_are_applied_once():
     expensive = _calculate(p, "p2p", variable_cost_multiplier=1.2)
     assert base.ebitdar_mln_rub - expensive.ebitdar_mln_rub == pytest.approx(660.4)  # 3302 * .2
     assert _linear_quantiles([0, 100]) == [5, 50, 95]
+
+
+@pytest.fixture
+def real_financial_routes():
+    from src.parsers.build_dataset import get_network_routes
+    return get_network_routes("p2p")
+
+
+@pytest.mark.parametrize("limit", [0, 1, 2, 4, 5, 7, 13, 50])
+def test_available_fleet_limit_capacity_and_full_fixed_cost(real_financial_routes, limit):
+    original = real_financial_routes.copy(deep=True)
+    result = evaluate_route_level_economics(FinModelInput(), real_financial_routes, available_aircraft_limit=limit)
+    assert result["required_aircraft_sj100"] <= limit
+    assert result["selected_routes_count"] == len(result["routes_pnl"])
+    assert len(result["routes_pnl"]) + len(result["excluded_routes"]) == 10
+    pd.testing.assert_frame_equal(original, real_financial_routes)
+    if result["selected_routes_count"]:
+        assert result["required_aircraft_sj100"] == calculate_required_sj100_fleet(result["selected_routes_count"], 5, False)
+        assert sum(row["allocated_fixed_cost_mln_rub"] for row in result["routes_pnl"]) == pytest.approx(115)
+        assert all(row["contribution_mln_rub"] > 0 for row in result["routes_pnl"])
+    else:
+        assert result["total_revenue_mln_rub"] == result["total_cost_mln_rub"] == result["total_ebitdar_mln_rub"] == 0
+        assert result["required_aircraft_sj100"] == 0
+        assert not result["operations_started"]
+    assert result["total_revenue_mln_rub"] - result["total_cost_mln_rub"] == pytest.approx(result["total_ebitdar_mln_rub"])
+
+
+@pytest.mark.parametrize("limit", [4, 5])
+def test_limited_p2p_profitable_and_average_hub_unprofitable(real_financial_routes, limit):
+    result = evaluate_route_level_economics(FinModelInput(), real_financial_routes, available_aircraft_limit=limit)
+    assert result["selected_routes_count"] == 3
+    assert result["total_ebitdar_mln_rub"] == pytest.approx(247.169808)
+    assert result["classic_hub_reference"]["metrics"]["ebitdar_mln_rub"] < 0
+    assert not result["classic_hub_reference"]["full_requested_network_supported"]
+
+
+def test_fleet_selection_is_by_contribution_margin_and_order_independent(real_financial_routes):
+    full = evaluate_route_level_economics(FinModelInput(), real_financial_routes)
+    top = sorted(full["routes_pnl"], key=lambda r: (-r["contribution_margin_pct"], -r["contribution_mln_rub"], r["origin_iata"], r["dest_iata"]))[:3]
+    chosen = evaluate_route_level_economics(FinModelInput(), real_financial_routes, available_aircraft_limit=5)
+    shuffled = evaluate_route_level_economics(FinModelInput(), real_financial_routes.iloc[::-1], available_aircraft_limit=5)
+    assert {(r['origin_iata'], r['dest_iata']) for r in top} == {(r['origin_iata'], r['dest_iata']) for r in chosen['routes_pnl']}
+    assert chosen == shuffled
+    assert full["required_aircraft_sj100"] == 13
+    assert full["selected_routes_count"] == 10
+
+
+def test_fleet_limit_with_subsidy_loss_and_unprofitable_candidates(real_financial_routes):
+    zero = evaluate_route_level_economics(FinModelInput(), real_financial_routes,
+        available_aircraft_limit=5, subsidy_retention_pct=0)
+    assert zero["total_ebitdar_mln_rub"] == zero["total_ebitdar_no_subsidy_mln_rub"]
+    assert all(row["annual_subsidy_mln_rub"] == 0 for row in zero["routes_pnl"])
+    assert zero["required_aircraft_sj100"] <= 5
+    # Очень низкий тариф: отрицательный вклад нельзя маскировать сокращением сети.
+    low = evaluate_route_level_economics(FinModelInput(avg_fare_rub=3500), real_financial_routes,
+        available_aircraft_limit=5, subsidy_retention_pct=0)
+    assert low["selected_routes_count"] == 0
+    assert not low["profitable_selected_network"]
+
+
+@pytest.mark.parametrize("limit", [-1, True, 2.5, float("nan"), float("inf"), "5"])
+def test_invalid_aircraft_limit(real_financial_routes, limit):
+    with pytest.raises(ValueError, match="available_aircraft_limit"):
+        evaluate_route_level_economics(FinModelInput(), real_financial_routes, available_aircraft_limit=limit)
+
+
+def test_financial_monte_carlo_reproducibility_and_stricter_risks(cities):
+    import random
+    before = random.getstate()
+    params = FinModelInput()
+    result = run_financial_monte_carlo(params, cities)
+    assert result == run_financial_monte_carlo(params, cities)
+    assert result != run_financial_monte_carlo(params, cities, seed=43)
+    assert random.getstate() == before
+    assert result["n_samples"] == 1000 and result["seed"] == 42
+    assert result["p2p_prob_positive_ebitdar_pct"] > result["hub_prob_positive_ebitdar_pct"]
+    assert 0 <= result["p2p_win_prob_pct"] <= 100
+    assert result["p2p_prob_positive_ebitdar_pct"] < run_monte_carlo_stress_test(params, cities)["p2p_prob_profitable_pct"]
+    for code in ("hub", "p2p"):
+        assert result[f"{code}_ebitdar_p5_p50_p95"] == sorted(result[f"{code}_ebitdar_p5_p50_p95"])
+        assert 0 <= result[f"{code}_prob_positive_ebitdar_pct"] <= 100
+    pessimistic = run_financial_monte_carlo(replace(params, scenario="conservative"), cities)
+    assert pessimistic["p2p_prob_positive_ebitdar_pct"] < result["p2p_prob_positive_ebitdar_pct"]
+
+
+def test_financial_monte_carlo_one_sample_and_positive_means_strictly_positive(monkeypatch, cities):
+    import src.models.unit_economics as model
+    one = run_financial_monte_carlo(FinModelInput(), cities, n_samples=1)
+    assert len(set(one["p2p_ebitdar_p5_p50_p95"])) == 1
+    original = model._calculate
+    def zero_profit(*args, **kwargs):
+        return replace(original(*args, **kwargs), ebitdar_mln_rub=0)
+    monkeypatch.setattr(model, "_calculate", zero_profit)
+    result = run_financial_monte_carlo(FinModelInput(), cities, n_samples=4)
+    assert result["p2p_prob_positive_ebitdar_pct"] == result["hub_prob_positive_ebitdar_pct"] == 0
+
+
+@pytest.mark.parametrize("n,seed", [(0,42), (-1,42), (True,42), (2.5,42), (5,True), (5,"42")])
+def test_financial_monte_carlo_invalid_inputs(cities, n, seed):
+    with pytest.raises(ValueError):
+        run_financial_monte_carlo(FinModelInput(), cities, n_samples=n, seed=seed)
+
+
+def test_financial_monte_carlo_no_shocks_matches_reference(monkeypatch, cities):
+    import src.models.unit_economics as model
+    class NoShock:
+        def __init__(self, seed):
+            pass
+        def uniform(self, low, high):
+            return 0.0 if low == -12 else 1.0
+    monkeypatch.setattr(model, "Random", NoShock)
+    result = run_financial_monte_carlo(FinModelInput(), cities, n_samples=3)
+    assert result["p2p_ebitdar_p5_p50_p95"] == [1054.6] * 3
+    assert result["hub_ebitdar_p5_p50_p95"] == [154.9] * 3
+
+
+@pytest.mark.parametrize("scenario", ["base", "conservative"])
+def test_svx_cannibalization_accounting_and_geometry(cities, scenario):
+    params = FinModelInput(scenario=scenario)
+    before = asdict(params), [asdict(c) for c in cities]
+    result = evaluate_svx_kuf_cannibalization(params, cities)
+    assert result["classic_hub"]["svx_margin_loss_mln_rub"] == 150
+    assert result["scissor_hybrid"]["svx_cannibalization_pct"] == 2.5
+    for strategy in ("classic_hub", "scissor_hybrid"):
+        row = result[strategy]
+        assert row["net_ebitdar_after_svx_cannibalization_mln_rub"] == pytest.approx(row["ebitdar_mln_rub"] - row["svx_margin_loss_mln_rub"])
+    assert result["scissor_total_fixed_cost_mln_rub"] == 163
+    assert result["scissor_new_base_fixed_cost_mln_rub"] == 0
+    assert result["feeder"]["incremental_margin_included_mln_rub"] == 0
+    assert result["feeder"]["flight_code"] == "WZ-1033"
+    assert result["feeder"]["observed_weekly_flights"] > 0
+    assert len(result["corridor_routes"]) == 8
+    assert result["geometrically_supported_kuf_routes_count"] == 3
+    assert all(row["svx_detour_pct"] > 35 for row in result["corridor_routes"])
+    assert any(row["svx_extra_km"] < 950 for row in result["corridor_routes"])
+    assert any(row["svx_extra_km"] > 1300 for row in result["corridor_routes"])
+    for row in result["corridor_routes"]:
+        assert row["via_svx_distance_km"] - row["direct_distance_km"] == pytest.approx(row["svx_extra_km"], abs=.002)
+        assert row["kuf_passes_15pct_detour"] == (row["kuf_detour_pct"] < 15)
+    assert (asdict(params), [asdict(c) for c in cities]) == before
+
+
+def test_svx_kuf_requires_kuf_in_candidate_pool(cities):
+    with pytest.raises(ValueError, match="не найден"):
+        evaluate_svx_kuf_cannibalization(FinModelInput(), [city for city in cities if city.iata != "KUF"])
+
+
+def test_assumptions_audit_sources_and_calibration_limitations():
+    import json
+    result = get_assumptions_audit_table()
+    assert result == get_assumptions_audit_table()
+    json.dumps(result, allow_nan=False)
+    assert result["calibration"]["status"] == "not_empirically_calibrated"
+    assert result["rw_route_pairs_count"] == 8
+    assert result["rw_directed_flight_codes_count"] == 16
+    assert result["subsidized_directed_routes_count"] == 21
+    codes = {row["flight_code"] for row in result["rw_flight_validation"]}
+    assert {"WZ-1025", "WZ-1033", "WZ-5343", "WZ-5305"} <= codes
+    for row in result["rw_flight_validation"]:
+        assert row["actual_flight_cost_rub"] is None
+        assert row["calibration_residual_rub"] is None
+        assert row["source_urls"] and row["observation_weeks"]
+        assert row["weekly_flights_observed"] > 0
+        assert row["model_flight_cost_rub"] == 385000 + 310 * row["distance_km"]
+        assert row["implied_crj_premium_vs_sj_pct"] > row["sj100_saving_vs_crj_pct"]
+    assert all(len(value) == 64 for value in result["source_sha256"].values())
+    assert len({row["assumption"] for row in result["assumptions"]}) == len(result["assumptions"])
+    assert all(row["source"] and row["limitation"] for row in result["assumptions"])
+    assert any(row["operator"] != "Ред Вингс" for row in result["subsidy_register"])

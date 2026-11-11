@@ -364,7 +364,7 @@ def project_path_to_top2_airline(params: FinModelInput, top_cities: List[CitySco
     return rows
 
 
-def evaluate_route_level_economics(
+def _route_level_pnl(
     params: FinModelInput, routes_df: "pd.DataFrame", *, subsidy_retention_pct: float = 100.0,
 ) -> dict:
     """P&L направленной P2P-сети по витрине Dev 1, без записи в витрины.
@@ -377,7 +377,7 @@ def evaluate_route_level_economics(
     Стоимость рейса=(385000+310*distance_km)*cost_factor*(seats/100).
     Постоянные 115 млн ₽/год распределяются ОДИН раз пропорционально вылетам.
     Тариф=params.avg_fare_rub*1.055; конкурентный тариф — только ориентир.
-    Загрузка P2P учитывает freq конкретной строки. Это сценарий заполнения
+    Загрузка P2P учитывает частоту из params. Это сценарий заполнения
     емкости, не подтвержденный спрос; pax Dev 1 возвращается отдельно.
     Флаг субсидии означает присутствие направления в перечне, а не право RW
     на выплату: оператор, сезон и квоты требуют отдельной проверки. Для
@@ -453,6 +453,8 @@ def evaluate_route_level_economics(
             "annual_revenue_mln_rub": (tickets + subsidy) / 1e6,
             "annual_cost_mln_rub": cost / 1e6,
             "allocated_fixed_cost_mln_rub": overhead / 1e6,
+            "contribution_mln_rub": (tickets + subsidy - flights * flight_cost) / 1e6,
+            "contribution_margin_pct": (tickets + subsidy - flights * flight_cost) / (tickets + subsidy) * 100,
             "annual_subsidy_mln_rub": subsidy / 1e6,
             "subsidy_eligible": row["subsidy_eligible"],
             "ebitdar_mln_rub": (tickets + subsidy - cost) / 1e6,
@@ -481,6 +483,76 @@ def evaluate_route_level_economics(
         "subsidy_retention_pct": subsidy_retention_pct,
         "assumptions": "Парные рейсы params.weekly_freq_per_route*2*52; 115 млн ₽ постоянных затрат на переданную сеть; флаг субсидии применяется к обоим плечам по ТЗ, не подтвержденный договор RW; pax — емкость при заданной загрузке, CASK — оценка Dev 1.",
     }
+
+
+def evaluate_route_level_economics(
+    params: FinModelInput, routes_df: "pd.DataFrame", *,
+    subsidy_retention_pct: float = 100.0, available_aircraft_limit: int | None = None,
+) -> dict:
+    """Помаршрутный P&L; при лимите — выбор маршрутов по маржинальности.
+
+    Все параметры учета и направленных субсидий описаны в _route_level_pnl.
+    При одинаковой частоте ресурс маршрута одинаков; сортируем по марже до
+    общесетевых постоянных затрат (contribution/revenue), затем по вкладу в ₽.
+    Маршруты с неположительным вкладом не отбираем. Это отбор по указанному
+    критерию, не оптимизация расписания и не максимизация суммарной прибыли.
+    После отбора 115 млн ₽ распределяются заново целиком, без пропорционального
+    уменьшения. При 0/1 борте программа P2P не открывается: затраты запуска 0.
+    classic_hub_reference — отдельный СРЕДНИЙ хабовый расчет по контрактной
+    модели для числа маршрутов, поддерживаемого тем же лимитом, а не P&L
+    реальной веерной сети. Возможность стыковок не выводится из числа бортов.
+    """
+    if available_aircraft_limit is not None and (
+        isinstance(available_aircraft_limit, bool)
+        or not isinstance(available_aircraft_limit, int) or available_aircraft_limit < 0
+    ):
+        raise ValueError("available_aircraft_limit должен быть неотрицательным целым числом или None")
+    full = _route_level_pnl(params, routes_df, subsidy_retention_pct=subsidy_retention_pct)
+    candidates = full["routes_pnl"]
+    requested = calculate_required_sj100_fleet(len(candidates), params.weekly_freq_per_route, False)
+    if available_aircraft_limit is None:
+        return {**full, "available_aircraft_limit": None,
+                "required_aircraft_sj100": requested,
+                "selected_routes_count": len(candidates), "excluded_routes": []}
+    capacity = max((n for n in range(1, len(candidates) + 1)
+                    if calculate_required_sj100_fleet(n, params.weekly_freq_per_route, False)
+                    <= available_aircraft_limit), default=0)
+    ordered = sorted(candidates, key=lambda r: (
+        -r["contribution_margin_pct"], -r["contribution_mln_rub"], r["origin_iata"], r["dest_iata"]
+    ))
+    selected = [row for row in ordered if row["contribution_mln_rub"] > 0][:capacity]
+    keys = {(row["origin_iata"], row["dest_iata"]) for row in selected}
+    if selected:
+        mask = [(o, d) in keys for o, d in zip(routes_df["origin_iata"], routes_df["dest_iata"])]
+        result = _route_level_pnl(params, routes_df.loc[mask], subsidy_retention_pct=subsidy_retention_pct)
+    else:
+        result = {**full, "routes_pnl": [], "avg_crj200_cask_advantage_pct": None}
+        for name in ("total_revenue_mln_rub", "total_cost_mln_rub", "total_ebitdar_mln_rub",
+                     "total_ebitdar_no_subsidy_mln_rub", "profitable_routes_count",
+                     "profitable_without_subsidy_count", "cask_observed_routes_count"):
+            result[name] = 0
+    supported_hub_routes = max((n for n in range(1, len(candidates) + 1)
+        if calculate_required_sj100_fleet(n, params.weekly_freq_per_route, True)
+        <= available_aircraft_limit), default=0)
+    hub = _calculate(replace(params, active_routes_count=supported_hub_routes), "hub",
+                     subsidy_retention=subsidy_retention_pct / 100) if supported_hub_routes else None
+    result.update(
+        available_aircraft_limit=available_aircraft_limit,
+        requested_aircraft_sj100=requested,
+        required_aircraft_sj100=calculate_required_sj100_fleet(len(selected), params.weekly_freq_per_route, False) if selected else 0,
+        selected_routes_count=len(selected),
+        excluded_routes=[row for row in ordered if (row["origin_iata"], row["dest_iata"]) not in keys],
+        selection_criterion="Положительная маржа до постоянных затрат / выручка, по убыванию",
+        operations_started=bool(selected),
+        profitable_selected_network=bool(selected) and result["total_ebitdar_mln_rub"] > 0,
+        classic_hub_reference={
+            "supported_routes_count": supported_hub_routes,
+            "full_requested_network_supported": supported_hub_routes == len(candidates),
+            "metrics": asdict(hub) if hub else None,
+            "scope": "Средний хабовый сценарий; не помаршрутная оптимизация, реализуемость волн не подтверждена",
+        },
+    )
+    return result
 
 
 def build_strategy_switching_matrix(
@@ -660,4 +732,268 @@ def run_monte_carlo_stress_test(
             "shared_shocks_between_strategies": True,
             "distribution_status": "Согласованные сценарные допущения, не эмпирическая калибровка",
         },
+    }
+
+
+def run_financial_monte_carlo(
+    params: FinModelInput, top_cities: List[CityScoreDTO], n_samples: int = 1000, seed: int = 42,
+) -> dict:
+    """Асимметричный финансовый стресс, отдельный от прежнего stress_test.
+
+    Независимые равномерные шоки: загрузка [-12,+4] п.п., сохранение субсидий
+    [0,1], переменные расходы [1,1.2], тариф [.85,1.05]. Шоки общие для двух
+    стратегий в каждой итерации. Применяются к выбранному сценарию; загрузка
+    ограничена 50..98%, тариф 3500..25000 ₽. EBITDAR>0 строго, win по
+    контрактному score=0.45*revenue+0.55*EBITDAR (равенство в пользу P2P).
+    Это риск-сценарии ТЗ, не частотный прогноз по исторической статистике.
+    """
+    evaluate_hypotheses(params, top_cities)
+    if isinstance(n_samples, bool) or not isinstance(n_samples, int) or n_samples <= 0:
+        raise ValueError("n_samples должен быть положительным целым числом")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("seed должен быть целым числом")
+    rng = Random(seed)
+    profits = {"hub": [], "p2p": []}
+    wins = 0
+    for _ in range(n_samples):
+        load_shift = rng.uniform(-12.0, 4.0)
+        retention = rng.uniform(0.0, 1.0)
+        cost_multiplier = rng.uniform(1.0, 1.2)
+        fare_multiplier = rng.uniform(.85, 1.05)
+        sampled = replace(params,
+            load_factor_pct=min(98.0, max(50.0, params.load_factor_pct + load_shift)),
+            avg_fare_rub=min(25000.0, max(3500.0, params.avg_fare_rub * fare_multiplier)))
+        hub = _calculate(sampled, "hub", variable_cost_multiplier=cost_multiplier, subsidy_retention=retention)
+        p2p = _calculate(sampled, "p2p", variable_cost_multiplier=cost_multiplier, subsidy_retention=retention)
+        profits["hub"].append(hub.ebitdar_mln_rub)
+        profits["p2p"].append(p2p.ebitdar_mln_rub)
+        wins += p2p.annual_revenue_mln_rub * .45 + p2p.ebitdar_mln_rub * .55 >= hub.annual_revenue_mln_rub * .45 + hub.ebitdar_mln_rub * .55
+    return {
+        "p2p_prob_positive_ebitdar_pct": round(sum(p > 0 for p in profits["p2p"]) / n_samples * 100, 6),
+        "hub_prob_positive_ebitdar_pct": round(sum(p > 0 for p in profits["hub"]) / n_samples * 100, 6),
+        "p2p_win_prob_pct": round(wins / n_samples * 100, 6),
+        "p2p_ebitdar_p5_p50_p95": _linear_quantiles(profits["p2p"]),
+        "hub_ebitdar_p5_p50_p95": _linear_quantiles(profits["hub"]),
+        "n_samples": n_samples, "seed": seed,
+        "assumptions": {
+            "load_shift_uniform_pp": [-12, 4], "load_clip_pct": [50, 98],
+            "subsidy_retention_uniform": [0, 1], "variable_cost_multiplier_uniform": [1, 1.2],
+            "fare_multiplier_uniform": [.85, 1.05], "fare_clip_rub": [3500, 25000],
+            "scenario": params.scenario, "profitability_rule": "EBITDAR > 0",
+            "winner_rule": "0.45 * revenue + 0.55 * EBITDAR; ties -> p2p",
+            "shared_shocks_between_strategies": True,
+            "quantiles": "linear interpolation at (n-1)*p; млн ₽",
+            "distribution_status": "Сценарные распределения, не историческая калибровка",
+        },
+    }
+
+
+SVX_TRANSIT_MARGIN_POOL_MLN = 1000.0  # Допущение: 15% потери = 150 млн ₽ из диапазона ТЗ.
+CLASSIC_HUB_SVX_CANNIBALIZATION_SHARE = .15
+SCISSOR_SVX_CANNIBALIZATION_SHARE = .025  # Сценарий <3%, не результат геометрической модели.
+
+
+def evaluate_svx_kuf_cannibalization(params: FinModelInput, top_cities: List[CityScoreDTO]) -> dict:
+    """Инкрементальная маржа НОВОЙ сети минус утрата маржи текущей базы SVX.
+
+    15% и 2.5% — заданные доли отвлечения транзитного потока. Перенос этих
+    долей на маржу предполагает одинаковую маржу пассажиров; маржинальный
+    пул SVX=1000 млн ₽ — допущение, дающее потерю 150 млн ₽ в диапазоне ТЗ.
+    Не смешиваем его с EBITDAR новой сети или всей авиакомпании. Финансовых
+    данных базы SVX нет; сценарий не подтверждает фактическую каннибализацию.
+    Геометрия отдельно проверяет все 8 пар GOJ/KZN/GSV/VOG -> MRV/PEE.
+    Для возможности остановки в KUF принят критерий Dev 2: крюк <15%.
+    Не подменяем им оценку спроса, расписания или подтверждение потери <3%.
+    Фидер WZ-1033 показан как возможность; дополнительная маржа не начисляется
+    без оценки пассажиров. Новый CAPEX базы ТОиР в KUF принят нулевым по
+    архитектуре полухаба, но операционные расходы 115+48 млн ₽ сохранены.
+    """
+    from pathlib import Path
+    from src.parsers.rosstat_loader import AIRPORT_COORDS, haversine_km
+
+    comparison = evaluate_scissor_hub_economics(params, top_cities, scissor_hub_iata="KUF")
+    evidence = []
+    for origin in ("GOJ", "KZN", "GSV", "VOG"):
+        for dest in ("MRV", "PEE"):
+            direct = haversine_km(AIRPORT_COORDS[origin], AIRPORT_COORDS[dest])
+            via = {hub: haversine_km(AIRPORT_COORDS[origin], AIRPORT_COORDS[hub])
+                        + haversine_km(AIRPORT_COORDS[hub], AIRPORT_COORDS[dest])
+                   for hub in ("SVX", "KUF")}
+            kuf_detour = (via["KUF"] / direct - 1) * 100
+            evidence.append({
+                "origin_iata": origin, "dest_iata": dest,
+                "direct_distance_km": round(direct, 3),
+                "via_svx_distance_km": round(via["SVX"], 3),
+                "via_kuf_distance_km": round(via["KUF"], 3),
+                "svx_detour_pct": round((via["SVX"] / direct - 1) * 100, 3),
+                "svx_extra_km": round(via["SVX"] - direct, 3),
+                "kuf_detour_pct": round(kuf_detour, 3),
+                "kuf_passes_15pct_detour": kuf_detour < 15.0,
+                "saving_kuf_vs_svx_km": round(via["SVX"] - via["KUF"], 3),
+            })
+    adjusted = {}
+    for key, share in (("classic_hub", CLASSIC_HUB_SVX_CANNIBALIZATION_SHARE),
+                       ("scissor_hybrid", SCISSOR_SVX_CANNIBALIZATION_SHARE)):
+        metrics = comparison[key]
+        loss = SVX_TRANSIT_MARGIN_POOL_MLN * share
+        adjusted[key] = {
+            **metrics, "svx_cannibalization_pct": share * 100,
+            "svx_margin_loss_mln_rub": loss,
+            "net_ebitdar_after_svx_cannibalization_mln_rub": round(metrics["ebitdar_mln_rub"] - loss, 6),
+        }
+    root = Path(__file__).resolve().parents[2]
+    routes = pd.read_parquet(root / "data/processed/routes_proof.parquet")
+    feeder = routes[(routes["origin_iata"] == "SVX") & (routes["dest_iata"] == "KUF")]
+    if feeder.empty:
+        raise ValueError("В витрине Dev 1 отсутствует SVX->KUF")
+    feeder_row = feeder.iloc[0]
+    return {
+        **adjusted, "pure_p2p_reference": comparison["pure_p2p"],
+        "svx_transit_margin_pool_mln_rub": SVX_TRANSIT_MARGIN_POOL_MLN,
+        "corridor_routes": evidence,
+        "geometrically_supported_kuf_routes_count": sum(r["kuf_passes_15pct_detour"] for r in evidence),
+        "svx_kuf_distance_km": round(haversine_km(AIRPORT_COORDS["SVX"], AIRPORT_COORDS["KUF"]), 3),
+        "scissor_new_base_capex_mln_rub": 0.0,
+        "scissor_new_base_fixed_cost_mln_rub": 0.0,
+        "scissor_total_fixed_cost_mln_rub": comparison["scissor_hybrid"]["fixed_cost_mln_rub"],
+        "feeder": {"flight_code": "WZ-1033", "origin_iata": "SVX", "dest_iata": "KUF",
+                   "observed_weekly_flights": int(feeder_row["own_flights_weekly"]),
+                   "source": str(feeder_row["proof_source"]),
+                   "incremental_margin_included_mln_rub": 0.0,
+                   "status": "Дополнительный подвоз возможен, прирост спроса не измерен"},
+        "assumptions": {
+            "cannibalization_status": "15%/2.5% и маржинальный пул 1000 млн ₽ — сценарий ТЗ, не измерение",
+            "margin_allocation": "Пропорционально отвлеченному транзитному потоку",
+            "geometry_status": "Гаверсинус по координатам Dev 1; не фактические воздушные трассы",
+            "financial_scope": "Новая сеть минус потеря существующей маржи SVX; не весь EBITDAR компании",
+            "capex_status": "Нет строительства новой базы ТОиР по проектной гипотезе; прочие инвестиции не оценены",
+        },
+    }
+
+
+def get_assumptions_audit_table() -> dict:
+    """Паспорт формул, сценарных коэффициентов и локальных первоисточников.
+
+    8 пар RW и 21 запись перечня — проверка происхождения входных данных.
+    Наличие расписания не калибрует себестоимость: фактических затрат, налета,
+    расхода топлива и маржи рейсов в витринах нет. calibration_status поэтому
+    явно not_empirically_calibrated; остатки к фактическим расходам не выдумываются.
+    CASK-преимущество Dev 1 — снижение SJ относительно CRJ, а не обратная
+    надбавка CRJ относительно SJ: 31% экономии соответствует ~45% надбавки.
+    """
+    import hashlib
+    import json
+    from pathlib import Path
+    from src.parsers.build_dataset import (
+        RW_FLIGHT_CODES, SUBSIDY_2026, SUBSIDY_SOURCE,
+        FLIGHT_FIXED_COST_RUB, FUEL_COST_RUB_PER_KM,
+        CRJ200_CASK_ADV_BASE_PCT, CRJ200_CASK_ADV_SLOPE, CRJ200_CASK_ADV_PEAK_KM,
+    )
+    from src.models.sj100_fleet import HUB_FLEET_FACTOR
+
+    root = Path(__file__).resolve().parents[2]
+    routes = pd.read_parquet(root / "data/processed/routes_proof.parquet")
+    schedules = json.loads((root / "data/raw/schedules_raw.json").read_text())
+    rows = []
+    def entry(name, value, unit, source, limitation):
+        rows.append({"assumption": name, "value": value, "unit": unit,
+                     "source": source, "status": "model_assumption", "limitation": limitation})
+    entry("sj100_distance_cost", {"fixed_rub": FLIGHT_FIXED_COST_RUB, "rub_per_km": FUEL_COST_RUB_PER_KM},
+          "руб./односторонний рейс", "src/parsers/build_dataset.py", "385000+310*distance; фактических расходов для калибровки нет")
+    entry("scenario_coefficients", {k: asdict(v) for k, v in _SCENARIOS.items()}, "множители и рубли",
+          "ТЗ Dev 3; _SCENARIOS", "Спрос, стоимость, ставка субсидии и затраты базы — допущения")
+    entry("average_flight_cost", {"hub": 645000, "p2p": 635000, "p2p_fixed_mln": 115}, "руб./рейс; млн ₽/год",
+          "ТЗ; _calculate", "Средний рейс; переменная стоимость масштабируется seats/100")
+    entry("loads", {"hub_adjustments_pp": [-2.5, 1.2, 3.2], "p2p_adjustments_pp": [2.4, -.8],
+                    "hub_limits_pct": [52, 95], "p2p_limits_pct": [54, 95]}, "п.п. / %",
+          "ТЗ; _effective_load", "Пороги частот: хаб <=3/4..5/>=6, P2P <=5/>=6; не оценка спроса по билетам")
+    entry("fare_and_subsidy_mix", {"hub_fare_factor": .935, "p2p_fare_factor": 1.055,
+                                   "hub_subsidized_share": .45, "p2p_subsidized_share": .65}, "доли",
+          "ТЗ; _calculate", "Доли используются в средней модели; route_level использует флаги Dev 1")
+    entry("accounting", {"weeks": 52, "legs_per_round_trip": 2, "belf_hub_clip_pct": [55, 96],
+                          "belf_p2p_clip_pct": [52, 96], "winner_revenue_weight": .45, "winner_profit_weight": .55},
+          "единицы модели", "ТЗ; _calculate/evaluate_hypotheses",
+          "Полный год; пассажиры по плечам; выручка с субсидиями; EBITDAR до аренды/амортизации/процентов/налогов; clipped BELF не истинный порог вне границ")
+    entry("route_network", {"fixed_cost_mln": 115, "subsidy_retention_pct": [0, 100]}, "млн ₽/год и %",
+          "Уточнение пользователя; evaluate_route_level_economics", "2*52*частота из params; субсидия на оба плеча — допущение; распределение всей фиксированной суммы после отбора")
+    entry("fleet", {"round_trips_per_week": ROUND_TRIPS_PER_AIRCRAFT_WEEK,
+                    "hub_factor": HUB_FLEET_FACTOR, "p2p_factor": P2P_FLEET_FACTOR,
+                    "minimum_hub": 3, "minimum_p2p": 2}, "безразмерные коэффициенты / борта",
+          "ТЗ; src/models/sj100_fleet.py", "Укрупненная потребность; не подтверждает расписание и волны пересадок")
+    entry("deliveries", {"base_pct": [0,0,0,0,15,30,45,65,85,100],
+                         "conservative_pct": [0,0,0,0,0,10,25,45,70,100],
+                         "reserve_base_limit": 6, "reserve_conservative_limit": 4}, "% потребности по кварталам",
+          "ТЗ; build_sj100_delivery_roadmap", "2026 Q3..2028 Q4; не подтвержденный заказ/поставка; резерв требует проверки")
+    entry("elasticity", FARE_ELASTICITY, "линейная эластичность", "ТЗ; simulate_fare_elasticity_curve", "Не регрессия по продажам; входная загрузка ограничена 50..98%")
+    entry("digital", {"interline_load_pp": 3, "interline_cost_mln": 18, "ancillary_rub_per_pax": 650,
+                      "distribution_saving_rub_per_pax": 180, "recovery_mln_per_10_routes": 22.5}, "п.п., руб., млн ₽/год",
+          "ТЗ; evaluate_digital_one_click_impact", "Не результаты A/B-тестов; перекрестный эффект начисляется один раз")
+    entry("scissor", {"coordination_mln_per_wave": SCISSOR_COORDINATION_COST_PER_WAVE_MLN,
+                      "load_pp_per_wave": SCISSOR_LOAD_BOOST_PER_WAVE_PP,
+                      "transit_share": SCISSOR_TRANSIT_SHARE, "transit_discount": SCISSOR_TRANSIT_FARE_DISCOUNT,
+                      "connection_minutes": 75, "detour_limit_pct": 15}, "сценарные величины",
+          "ТЗ и src/scoring/SCISSOR_HUB.md", "Геометрия не доказывает загрузку/экономию ТО/реализуемость пересадки")
+    entry("svx_cannibalization", {"margin_pool_mln": SVX_TRANSIT_MARGIN_POOL_MLN,
+                                 "classic_share": CLASSIC_HUB_SVX_CANNIBALIZATION_SHARE,
+                                 "scissor_share": SCISSOR_SVX_CANNIBALIZATION_SHARE}, "млн ₽/год и доли",
+          "Уточнение пользователя; evaluate_svx_kuf_cannibalization", "Пул 1000 млн ₽ выбран для потери 150 млн ₽ при 15%; не финансовая отчетность SVX")
+    entry("financial_stress", {"load_shift_pp": [-12,4], "subsidy_retention": [0,1],
+                               "variable_cost_factor": [1,1.2], "fare_factor": [.85,1.05]}, "равномерные интервалы",
+          "Уточнение пользователя; run_financial_monte_carlo", "Независимые факторы, общие для стратегий; не эмпирические вероятности")
+    entry("legacy_stress", {"load_sigma_pp": 6, "subsidy_retention": [.5,1],
+                            "variable_cost_factor": [1,1.2], "fare_factor": [.9,1.1]}, "нормальная загрузка; равномерные множители",
+          "ТЗ; run_monte_carlo_stress_test", "Отдельный прежний сценарий, отличается от нового финансового стресса")
+    entry("market_and_scaling", {"rf_pax": TOTAL_RF_MARKET_PAX_2025, "rw_base_pax": RED_WINGS_BASE_PAX_2025,
+                                "s7_share_pct": S7_REFERENCE_MARKET_SHARE_PCT, "ural_share_pct": URAL_REFERENCE_MARKET_SHARE_PCT,
+                                "wave_routes": [65,120], "target_pax_mln": [9.15,14.15],
+                                "tu214_seats": 210, "ms21_seats": 211}, "пассажиры, %, кресла",
+          "ТЗ; project_path_to_top2_airline", "База RW 4.465 млн — командный сценарий, в кейсе также 2.7 млн; рынок/конкуренты постоянны, флот и цели условны")
+    entry("crj200_cask_comparison", {"sj100_saving_at_peak_pct": CRJ200_CASK_ADV_BASE_PCT,
+                                   "peak_distance_km": CRJ200_CASK_ADV_PEAK_KM,
+                                   "slope_pp_per_km": CRJ200_CASK_ADV_SLOPE, "sj100_seats":100, "crj200_seats":50},
+          "% снижения CASK SJ относительно CRJ", "src/parsers/build_dataset.py",
+          "Формула Dev 1, не наблюденный расход CRJ; обратная надбавка CRJ считается saving/(100-saving)")
+    flights, seen = [], set()
+    for (origin, dest), code in RW_FLIGHT_CODES.items():
+        key = tuple(sorted((origin, dest)))
+        if key in seen:
+            continue
+        seen.add(key)
+        match = routes[(routes.origin_iata == origin) & (routes.dest_iata == dest)]
+        if len(match) != 1:
+            raise ValueError(f"Нет однозначного направления {origin}->{dest} в витрине")
+        row = match.iloc[0]
+        cache = [r for r in schedules if r["origin_iata"] == origin and r["dest_iata"] == dest and r["own_operator"]]
+        model_cost = FLIGHT_FIXED_COST_RUB + FUEL_COST_RUB_PER_KM * float(row["distance_km"])
+        saving = float(row["crj200_cask_advantage_pct"])
+        flights.append({
+            "flight_code": code, "reverse_flight_code": RW_FLIGHT_CODES.get((dest, origin)),
+            "origin_iata": origin, "dest_iata": dest,
+            "weekly_flights_observed": int(row["own_flights_weekly"]),
+            "source_urls": sorted({r["source"] for r in cache}),
+            "observation_weeks": sorted({r["week"] for r in cache}),
+            "distance_km": float(row["distance_km"]), "model_flight_cost_rub": model_cost,
+            "actual_flight_cost_rub": None, "calibration_residual_rub": None,
+            "sj100_cask_rub_per_seat_km": model_cost / (100 * float(row["distance_km"])),
+            "sj100_saving_vs_crj_pct": saving,
+            "implied_crj_premium_vs_sj_pct": saving / (100 - saving) * 100,
+            "calibration_status": "not_empirically_calibrated",
+            "schedule_status": "observed_in_dev1_cache" if cache else "not_found_in_cache",
+        })
+    subsidies = [{"origin_iata": o, "dest_iata": d, "operator": value[0],
+                  "weekly_flights": value[1], "period": value[2],
+                  "source": SUBSIDY_SOURCE, "source_url": "https://favt.gov.ru/",
+                  "local_reference": "src/parsers/build_dataset.py:SUBSIDY_2026",
+                  "status": "local_transcription_not_live_verified"}
+                 for (o, d), value in SUBSIDY_2026.items()]
+    files = ["data/processed/routes_proof.parquet", "data/raw/schedules_raw.json",
+             "src/parsers/build_dataset.py", "src/scoring/SCISSOR_HUB.md"]
+    return {
+        "assumptions": rows, "rw_flight_validation": flights,
+        "rw_route_pairs_count": len(flights), "rw_directed_flight_codes_count": len(RW_FLIGHT_CODES),
+        "subsidy_register": subsidies, "subsidized_directed_routes_count": len(subsidies),
+        "calibration": {"status": "not_empirically_calibrated",
+                        "reason": "Есть расписания и модельные расходы; фактические затраты RW/CRJ и пассажирская маржа отсутствуют",
+                        "needed": ["фактические расходы рейса", "налет/расход топлива", "загрузка и тариф продажи", "фактические выплаты субсидий"]},
+        "source_sha256": {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in files},
     }
