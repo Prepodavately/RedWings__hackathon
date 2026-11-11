@@ -12,7 +12,10 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.ui.kpi_cards import render_comparison_kpis, render_route_economics
+from src.ui.kpi_cards import (
+    render_comparison_kpis, render_route_economics, render_fleet_stress,
+    render_svx_kuf_comparison, render_assumptions_audit,
+)
 from src.ui.map_renderer import render_route_network_map
 from src.ui.roadmap_chart import render_sj100_roadmap
 from src.ui.sidebar_controls import render_sidebar_controls
@@ -149,16 +152,23 @@ def main():
             coordinates = pd.read_parquet(features, columns=['iata', 'lat', 'lon'])
             routes.attrs['city_coordinates'] = {row.iata: (row.lat, row.lon) for row in coordinates.itertuples()}
     st.caption(f'Расчётная сеть: {count} пар городов · {params.weekly_freq_per_route} пар рейсов/неделю на маршрут · {count * params.weekly_freq_per_route * 2 * 52:,} вылетов в год. Лидер модели: {comparison.winner.upper()}.')
-    battle, network, scoring, roadmap = st.tabs([
+    battle, network, scoring, cannibalization, roadmap = st.tabs([
         '💰 Битва гипотез', '🗺️ Карта и крюк через Москву',
-        '🏆 Скоринг и транзит', '🚀 Дорожная карта и путь к №2'])
+        '🏆 Скоринг и транзит', '🧭 KUF vs SVX', '🚀 Дорожная карта и путь к №2'])
     with battle:
+        stress = render_fleet_stress(params, networks['p2p'].head(count).copy())
+        st.divider()
+        st.subheader('Сравнение полной сети · без ресурсного лимита')
+        st.caption('Карточки ниже — исходная модель обеих гипотез при заданном сценарии рынка. Лимит бортов и ручной секвестр применяются к отдельному стресс-тесту выше; Монте-Карло самостоятельно разыгрывает уровень субсидий.')
         render_comparison_kpis(comparison, params, cities)
-        render_route_economics(params, networks['p2p'].head(count).copy())
+        render_route_economics(params, networks['p2p'].head(count).copy(), stress)
+        render_assumptions_audit(params, float(100 - st.session_state.get('subsidy_cut_pct', 0)))
     with network:
         render_route_network_map(routes, cities)
     with scoring:
         _render_scoring(cities)
+    with cannibalization:
+        render_svx_kuf_comparison(params, cities)
     with roadmap:
         st.caption(f'Очереди запуска: {selected.upper()}; график потребности пилота: лидер {comparison.winner.upper()}. Волны федерального роста ниже рассчитаны моделью P2P.')
         render_sj100_roadmap(routes, comparison, params, cities)
