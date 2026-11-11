@@ -893,7 +893,7 @@ def get_assumptions_audit_table() -> dict:
 
     root = Path(__file__).resolve().parents[2]
     routes = pd.read_parquet(root / "data/processed/routes_proof.parquet")
-    schedules = json.loads((root / "data/raw/schedules_raw.json").read_text())
+    schedules = json.loads((root / "data/raw/schedules_raw.json").read_text(encoding="utf-8"))
     rows = []
     def entry(name, value, unit, source, limitation):
         rows.append({"assumption": name, "value": value, "unit": unit,
