@@ -29,7 +29,10 @@ top_cities проверяет выбор хаба; DTO не содержит м�
 
 from dataclasses import asdict, dataclass, replace
 from math import isfinite
+from random import Random
 from typing import List, Sequence
+
+import pandas as pd
 
 from src.models.sj100_fleet import (
     P2P_FLEET_FACTOR, ROUND_TRIPS_PER_AIRCRAFT_WEEK, calculate_required_sj100_fleet,
@@ -100,16 +103,20 @@ def _effective_load(params: FinModelInput, code: HypothesisCode) -> float:
     return round(min(95.0, max(52.0 if code == "hub" else 54.0, load)), 1)
 
 
-def _calculate(params: FinModelInput, code: HypothesisCode) -> HypothesisResultDTO:
+def _calculate(
+    params: FinModelInput, code: HypothesisCode, *,
+    variable_cost_multiplier: float = 1.0, subsidy_retention: float = 1.0,
+) -> HypothesisResultDTO:
+    """Общий расчет; стресс-множители не меняют глобальные сценарии/DTO."""
     scenario = _SCENARIOS[params.scenario]
     is_hub = code == "hub"
     flights = params.active_routes_count * params.weekly_freq_per_route * 2 * WEEKS_PER_YEAR
     seats = flights * params.aircraft_seats
     passengers = int(round(seats * (_effective_load(params, code) / 100.0)))
     fare = round(params.avg_fare_rub * (0.935 if is_hub else 1.055))
-    subsidy_mln = flights * (0.45 if is_hub else 0.65) * scenario.subsidy_per_flight_rub / 1e6
+    subsidy_mln = flights * (0.45 if is_hub else 0.65) * scenario.subsidy_per_flight_rub * subsidy_retention / 1e6
     fixed_cost_mln = scenario.hub_fixed_cost_rub / 1e6 if is_hub else 115.0
-    cost_per_flight = (645_000 if is_hub else 635_000) * scenario.cost_factor * (params.aircraft_seats / 100.0)
+    cost_per_flight = (645_000 if is_hub else 635_000) * scenario.cost_factor * (params.aircraft_seats / 100.0) * variable_cost_multiplier
     cost_mln = round(flights * cost_per_flight / 1e6 + fixed_cost_mln, 1)
     revenue_mln = round(passengers * fare / 1e6 + subsidy_mln, 1)
     ebitdar_mln = round(revenue_mln - cost_mln, 1)
@@ -355,3 +362,302 @@ def project_path_to_top2_airline(params: FinModelInput, top_cities: List[CitySco
             "assumptions": "Постоянный рынок 108.9 млн, S7 11.8%, Уральские 8.5%; нет каннибализации; поставки и спрос не подтверждены; до 2027-H2 только перераспределение существующего флота.",
         })
     return rows
+
+
+def evaluate_route_level_economics(
+    params: FinModelInput, routes_df: "pd.DataFrame", *, subsidy_retention_pct: float = 100.0,
+) -> dict:
+    """P&L направленной P2P-сети по витрине Dev 1, без записи в витрины.
+
+    По уточнению пользователя каждая строка задает парный маршрут:
+    annual_flights=params.weekly_freq_per_route*2*52. freq из Dev 1 сохраняется
+    как справка о направленном спросе, но не заменяет управляющую частоту.
+    Обратные дубли A->B/B->A отклоняются: иначе оборот считался бы дважды.
+    Размер сети равен числу строк, а не params.active_routes_count.
+    Стоимость рейса=(385000+310*distance_km)*cost_factor*(seats/100).
+    Постоянные 115 млн ₽/год распределяются ОДИН раз пропорционально вылетам.
+    Тариф=params.avg_fare_rub*1.055; конкурентный тариф — только ориентир.
+    Загрузка P2P учитывает freq конкретной строки. Это сценарий заполнения
+    емкости, не подтвержденный спрос; pax Dev 1 возвращается отдельно.
+    Флаг субсидии означает присутствие направления в перечне, а не право RW
+    на выплату: оператор, сезон и квоты требуют отдельной проверки. Для
+    стресс-теста ставка из ТЗ применяется к ОБОИМ плечам eligible-маршрута согласно ТЗ (права на обратное плечо не подтверждены).
+    BELF не обрезается: >100% показывает недостижимую безубыточность.
+    """
+    from src.parsers.build_dataset import FLIGHT_FIXED_COST_RUB, FUEL_COST_RUB_PER_KM
+
+    _validate_params(params)
+    _finite_number("subsidy_retention_pct", subsidy_retention_pct)
+    if not 0 <= subsidy_retention_pct <= 100:
+        raise ValueError("subsidy_retention_pct должен быть в диапазоне 0..100")
+    required = {"origin_iata", "dest_iata", "distance_km", "subsidy_eligible"}
+    if not isinstance(routes_df, pd.DataFrame) or routes_df.empty:
+        raise ValueError("routes_df должен быть непустым DataFrame")
+    if not required <= set(routes_df.columns):
+        raise ValueError(f"В routes_df отсутствуют колонки: {sorted(required - set(routes_df.columns))}")
+    if routes_df.duplicated(["origin_iata", "dest_iata"]).any():
+        raise ValueError("Направления origin_iata/dest_iata не должны повторяться")
+    records = routes_df.to_dict("records")
+    for row in records:
+        for name in ("origin_iata", "dest_iata"):
+            value = row[name]
+            if not isinstance(value, str) or len(value) != 3 or not value.isascii() or not value.isalpha() or not value.isupper():
+                raise ValueError(f"{name} должен быть трехбуквенным IATA-кодом")
+        if row["origin_iata"] == row["dest_iata"]:
+            raise ValueError("Маршрут не может вести в тот же аэропорт")
+        _finite_number("distance_km", row["distance_km"])
+        if row["distance_km"] <= 0:
+            raise ValueError("distance_km должен быть положительным")
+        if not isinstance(row["subsidy_eligible"], bool):
+            raise ValueError("subsidy_eligible должен быть bool, не строкой или пропуском")
+        for name in ("competitor_fare_rub", "crj200_cask_advantage_pct", "pax", "freq"):
+            value = row.get(name)
+            if value is not None and not pd.isna(value):
+                _finite_number(name, value)
+                if name != "crj200_cask_advantage_pct" and value < 0:
+                    raise ValueError(f"{name} не может быть отрицательным")
+    pairs = [tuple(sorted((row["origin_iata"], row["dest_iata"]))) for row in records]
+    if len(pairs) != len(set(pairs)):
+        raise ValueError("Обратные направления одной пары нельзя считать дважды")
+    route_flights = params.weekly_freq_per_route * 2 * WEEKS_PER_YEAR
+    total_flights = route_flights * len(records)
+    scenario = _SCENARIOS[params.scenario]
+    fare = round(params.avg_fare_rub * 1.055)
+    pnl = []
+    for row in records:
+        flights = route_flights
+        seats = flights * params.aircraft_seats
+        load = _effective_load(params, "p2p")
+        passengers = round(seats * load / 100)
+        flight_cost = (FLIGHT_FIXED_COST_RUB + FUEL_COST_RUB_PER_KM * row["distance_km"]) * scenario.cost_factor * params.aircraft_seats / 100
+        overhead = 115e6 * flights / total_flights
+        cost = flights * flight_cost + overhead
+        subsidy_rate = scenario.subsidy_per_flight_rub * subsidy_retention_pct / 100 if row["subsidy_eligible"] else 0.0
+        subsidy = flights * subsidy_rate
+        tickets = passengers * fare
+        competitor = row.get("competitor_fare_rub")
+        competitor = None if competitor is None or pd.isna(competitor) else float(competitor)
+        advantage = row.get("crj200_cask_advantage_pct")
+        advantage = None if advantage is None or pd.isna(advantage) else float(advantage)
+        demand = row.get("pax")
+        demand = None if demand is None or pd.isna(demand) else float(demand)
+        pnl.append({
+            "route_code": row.get("route_code", f"{row['origin_iata']}-{row['dest_iata']}"),
+            "origin_iata": row["origin_iata"], "dest_iata": row["dest_iata"],
+            "distance_km": float(row["distance_km"]), "weekly_round_trips": params.weekly_freq_per_route,
+            "dev1_weekly_departures": None if pd.isna(row.get("freq")) or row.get("freq") is None else float(row["freq"]),
+            "annual_flights": flights, "annual_passengers": passengers,
+            "effective_load_factor_pct": load, "effective_fare_rub": fare,
+            "competitor_fare_rub": competitor,
+            "fare_vs_competitor_rub": None if competitor is None else fare - competitor,
+            "annual_revenue_mln_rub": (tickets + subsidy) / 1e6,
+            "annual_cost_mln_rub": cost / 1e6,
+            "allocated_fixed_cost_mln_rub": overhead / 1e6,
+            "annual_subsidy_mln_rub": subsidy / 1e6,
+            "subsidy_eligible": row["subsidy_eligible"],
+            "ebitdar_mln_rub": (tickets + subsidy - cost) / 1e6,
+            "ebitdar_no_subsidy_mln_rub": (tickets - cost) / 1e6,
+            "belf_with_subsidy_pct": max(0.0, (cost - subsidy) / (seats * fare) * 100),
+            "belf_no_subsidy_pct": cost / (seats * fare) * 100,
+            "viable_without_subsidy": tickets >= cost,
+            "crj200_cask_advantage_pct": advantage,
+            "dev1_estimated_passengers": demand,
+            "scenario_exceeds_dev1_demand": None if demand is None else passengers > demand,
+            "proof_source": row.get("proof_source", "не предоставлен"),
+            "subsidy_check": row.get("subsidy_check", "не предоставлен"),
+        })
+    pnl.sort(key=lambda row: (-row["ebitdar_mln_rub"], row["origin_iata"], row["dest_iata"]))
+    advantages = [row["crj200_cask_advantage_pct"] for row in pnl if row["crj200_cask_advantage_pct"] is not None]
+    return {
+        "routes_pnl": pnl,
+        "total_revenue_mln_rub": sum(row["annual_revenue_mln_rub"] for row in pnl),
+        "total_cost_mln_rub": sum(row["annual_cost_mln_rub"] for row in pnl),
+        "total_ebitdar_mln_rub": sum(row["ebitdar_mln_rub"] for row in pnl),
+        "total_ebitdar_no_subsidy_mln_rub": sum(row["ebitdar_no_subsidy_mln_rub"] for row in pnl),
+        "profitable_routes_count": sum(row["ebitdar_mln_rub"] >= 0 for row in pnl),
+        "profitable_without_subsidy_count": sum(row["viable_without_subsidy"] for row in pnl),
+        "avg_crj200_cask_advantage_pct": sum(advantages) / len(advantages) if advantages else None,
+        "cask_observed_routes_count": len(advantages),
+        "subsidy_retention_pct": subsidy_retention_pct,
+        "assumptions": "Парные рейсы params.weekly_freq_per_route*2*52; 115 млн ₽ постоянных затрат на переданную сеть; флаг субсидии применяется к обоим плечам по ТЗ, не подтвержденный договор RW; pax — емкость при заданной загрузке, CASK — оценка Dev 1.",
+    }
+
+
+def build_strategy_switching_matrix(
+    params: FinModelInput, top_cities: List[CityScoreDTO],
+    frequencies: Sequence[int] = (2, 3, 4, 5, 6, 7, 8, 9, 10),
+    fares_rub: Sequence[float] = (6000, 7000, 8000, 8400, 9000, 10000, 11000, 12000),
+) -> dict:
+    """Строки=частоты, столбцы=тарифы; разность EBITDAR=P2P-хаб (млн ₽).
+
+    winner берется из контрактного взвешенного критерия, не из знака разности.
+    Наличие областей победы каждой стратегии не гарантируется коэффициентами.
+    """
+    evaluate_hypotheses(params, top_cities)
+    frequencies, fares_rub = list(frequencies), list(fares_rub)
+    if not frequencies or not fares_rub:
+        raise ValueError("Оси матрицы не могут быть пустыми")
+    differences, winners = [], []
+    for freq in frequencies:
+        diff_row, winner_row = [], []
+        for fare in fares_rub:
+            result = evaluate_hypotheses(replace(params, weekly_freq_per_route=freq, avg_fare_rub=fare), top_cities)
+            diff_row.append(round(result.p2p.ebitdar_mln_rub - result.hub.ebitdar_mln_rub, 1))
+            winner_row.append(result.winner)
+        differences.append(diff_row)
+        winners.append(winner_row)
+    return {
+        "frequencies": frequencies, "fares_rub": fares_rub,
+        "ebitdar_diff_matrix": differences, "winner_matrix": winners,
+        "p2p_win_share_pct": sum(value == "p2p" for row in winners for value in row) / (len(frequencies) * len(fares_rub)) * 100,
+        "axis_order": "rows=frequencies, columns=fares_rub",
+        "difference_definition": "p2p.ebitdar_mln_rub - hub.ebitdar_mln_rub",
+    }
+
+
+# Сценарные коэффициенты согласованы пользователем 11.11.2026; не данные Dev 2.
+SCISSOR_COORDINATION_COST_PER_WAVE_MLN = 24.0
+SCISSOR_LOAD_BOOST_PER_WAVE_PP = 1.8
+SCISSOR_TRANSIT_SHARE = 0.25
+SCISSOR_TRANSIT_FARE_DISCOUNT = 0.06  # средний дисконт сети = 0.25 * 6% = 1.5%
+
+
+def evaluate_scissor_hub_economics(
+    params: FinModelInput, top_cities: List[CityScoreDTO], *,
+    scissor_hub_iata: str = "KUF", scissor_waves_per_day: int = 2,
+) -> dict:
+    """Сценарий P2P + обмен пассажирами, со справкой геометрии Dev 2.
+
+    Сравнение использует один выбранный аэропорт для классического и гибридного
+    хаба. +1.8 п.п./волна, 24 млн ₽/волна координации, 25% транзита с дисконтом
+    6% (1.5% на всю сеть) — согласованные пользователем сценарные допущения.
+    Индекс Dev 2 вычисляется из текущих parquet, но НЕ конвертируется в спрос:
+    геометрия не доказывает загрузку, 75-минутную пересадку или отсутствие ТО.
+    Флот P2P сохранен как допущение о реализуемости сквозного расписания.
+    Координационные затраты пропорциональны числу волн; субсидии как у P2P.
+    Гибрид не обязан выигрывать, например при уже достигнутом потолке загрузки.
+    """
+    from pathlib import Path
+    from src.scoring.city_scorer import load_features, calculate_gravity_matrix, calculate_scissor_hub_index
+
+    if isinstance(scissor_waves_per_day, bool) or not isinstance(scissor_waves_per_day, int) or not 1 <= scissor_waves_per_day <= 3:
+        raise ValueError("scissor_waves_per_day должен быть целым числом 1..3")
+    selected = replace(params, hub_iata=scissor_hub_iata)
+    comparison = evaluate_hypotheses(selected, top_cities)
+    root = Path(__file__).resolve().parents[2]
+    features = load_features()
+    routes = pd.read_parquet(root / "data/processed/routes_proof.parquet")
+    gravity = calculate_gravity_matrix(features, routes)
+    indices = calculate_scissor_hub_index(features, gravity)
+    matched = indices[indices["iata"] == scissor_hub_iata]
+    if matched.empty:
+        raise ValueError("scissor_hub_iata отсутствует в витрине Dev 2")
+    evidence = matched.iloc[0]
+    base = comparison.p2p
+    flights = params.active_routes_count * params.weekly_freq_per_route * 2 * WEEKS_PER_YEAR
+    capacity = flights * params.aircraft_seats
+    load = min(95.0, _effective_load(selected, "p2p") + SCISSOR_LOAD_BOOST_PER_WAVE_PP * scissor_waves_per_day)
+    pax = round(capacity * (load / 100))
+    fare = round(round(params.avg_fare_rub * 1.055) * (1 - SCISSOR_TRANSIT_SHARE * SCISSOR_TRANSIT_FARE_DISCOUNT))
+    subsidy = flights * .65 * _SCENARIOS[params.scenario].subsidy_per_flight_rub / 1e6
+    revenue = round(pax * fare / 1e6 + subsidy, 1)
+    coordination_cost = SCISSOR_COORDINATION_COST_PER_WAVE_MLN * scissor_waves_per_day
+    cost = base.annual_revenue_mln_rub - base.ebitdar_mln_rub + coordination_cost
+    profit = round(revenue - cost, 1)
+    belf = (cost - subsidy) * 1e6 / (capacity * fare) * 100
+    hybrid = {
+        **asdict(base), "code": "scissor_hybrid",
+        "title": f"P2P + Узел-ножницы ({scissor_hub_iata})",
+        "annual_passengers": pax, "annual_revenue_mln_rub": revenue,
+        "annual_cost_mln_rub": round(cost, 1), "ebitdar_mln_rub": profit,
+        "ebitdar_margin_pct": round(profit / max(1.0, revenue) * 100, 1),
+        "breakeven_load_factor_pct": belf,
+        "market_share_delta_pct": round(pax / TOTAL_RF_MARKET_PAX_2025 * 100, 3),
+        "effective_load_factor_pct": load, "effective_fare_rub": fare,
+        "fixed_cost_mln_rub": 115.0 + coordination_cost,
+    }
+    return {
+        "classic_hub": asdict(comparison.hub), "pure_p2p": asdict(base),
+        "scissor_hybrid": hybrid,
+        "ebitdar_uplift_vs_p2p_mln_rub": round(profit - base.ebitdar_mln_rub, 1),
+        "ebitdar_uplift_vs_classic_hub_mln_rub": round(profit - comparison.hub.ebitdar_mln_rub, 1),
+        "fixed_cost_saving_vs_classic_hub_mln_rub": _SCENARIOS[params.scenario].hub_fixed_cost_rub / 1e6 - hybrid["fixed_cost_mln_rub"],
+        "scissor_evidence": {
+            "iata": scissor_hub_iata, "scissor_rank": int(evidence["scissor_rank"]),
+            "scissor_hub_index": float(evidence["scissor_hub_index"]),
+            "eligible_directed_pairs": int(evidence["eligible_directed_pairs"]),
+            "source": "Dev 2 calculate_scissor_hub_index; current cities_features/routes_proof.parquet",
+            "max_detour_pct": 15.0,
+        },
+        "assumptions": {
+            "coordination_cost_mln_rub": coordination_cost,
+            "coordination_cost_per_wave_mln_rub": SCISSOR_COORDINATION_COST_PER_WAVE_MLN,
+            "load_boost_per_wave_pp": SCISSOR_LOAD_BOOST_PER_WAVE_PP,
+            "waves_per_day": scissor_waves_per_day, "transfer_window_minutes": 75,
+            "transit_share": SCISSOR_TRANSIT_SHARE,
+            "transit_discount_pct": SCISSOR_TRANSIT_FARE_DISCOUNT * 100,
+            "blended_discount_pct": SCISSOR_TRANSIT_SHARE * SCISSOR_TRANSIT_FARE_DISCOUNT * 100,
+            "status": "Сценарные допущения; не доказаны геометрией и требуют проверки расписания/спроса/ТО",
+        },
+    }
+
+
+def _linear_quantiles(values: Sequence[float]) -> list[float]:
+    """Квантили p5/p50/p95: линейная интерполяция позиции (n-1)*p."""
+    ordered = sorted(values)
+    result = []
+    for p in (.05, .50, .95):
+        position = (len(ordered) - 1) * p
+        lower = int(position)
+        upper = min(lower + 1, len(ordered) - 1)
+        result.append(round(ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower), 6))
+    return result
+
+
+def run_monte_carlo_stress_test(
+    params: FinModelInput, top_cities: List[CityScoreDTO], *, n_simulations: int = 500, seed: int = 42,
+) -> dict:
+    """Согласованные шоки обеим стратегиям, локальный random.Random(seed).
+
+    Распределения согласованы пользователем 11.11.2026: загрузка normal(0,6)
+    п.п. с clipping 50..98, тариф uniform(.9,1.1) с clipping 3500..25000,
+    переменные расходы uniform(1,1.2), сохранение субсидий uniform(.5,1).
+    Это независимые гипотезы, не оцененная статистическая модель рисков.
+    Коэффициенты накладываются на выбранный base/conservative; постоянные
+    расходы не инфлируются повторно. win — контрактный score, не знак прибыли.
+    Прибыльность: EBITDAR>=0. Интервалы вероятностей не подгоняются под ТЗ.
+    """
+    evaluate_hypotheses(params, top_cities)
+    if isinstance(n_simulations, bool) or not isinstance(n_simulations, int) or n_simulations <= 0:
+        raise ValueError("n_simulations должен быть положительным целым числом")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("seed должен быть целым числом")
+    rng = Random(seed)
+    hub_profits, p2p_profits = [], []
+    wins = 0
+    for _ in range(n_simulations):
+        sampled = replace(params,
+            load_factor_pct=min(98.0, max(50.0, params.load_factor_pct + rng.gauss(0, 6))),
+            avg_fare_rub=min(25000.0, max(3500.0, params.avg_fare_rub * rng.uniform(.9, 1.1))))
+        cost_multiplier, retention = rng.uniform(1, 1.2), rng.uniform(.5, 1)
+        hub = _calculate(sampled, "hub", variable_cost_multiplier=cost_multiplier, subsidy_retention=retention)
+        p2p = _calculate(sampled, "p2p", variable_cost_multiplier=cost_multiplier, subsidy_retention=retention)
+        hub_profits.append(hub.ebitdar_mln_rub)
+        p2p_profits.append(p2p.ebitdar_mln_rub)
+        wins += p2p.annual_revenue_mln_rub * .45 + p2p.ebitdar_mln_rub * .55 >= hub.annual_revenue_mln_rub * .45 + hub.ebitdar_mln_rub * .55
+    return {
+        "p2p_prob_profitable_pct": round(sum(value >= 0 for value in p2p_profits) / n_simulations * 100, 6),
+        "hub_prob_profitable_pct": round(sum(value >= 0 for value in hub_profits) / n_simulations * 100, 6),
+        "p2p_win_probability_pct": round(wins / n_simulations * 100, 6),
+        "p2p_ebitdar_p5_p50_p95": _linear_quantiles(p2p_profits),
+        "hub_ebitdar_p5_p50_p95": _linear_quantiles(hub_profits),
+        "n_simulations": n_simulations, "seed": seed,
+        "assumptions": {
+            "load_noise_std_pp": 6.0, "load_clip_pct": [50, 98],
+            "fare_multiplier_uniform": [.9, 1.1], "fare_clip_rub": [3500, 25000],
+            "variable_cost_multiplier_uniform": [1.0, 1.2],
+            "subsidy_retention_uniform": [.5, 1.0], "scenario": params.scenario,
+            "shared_shocks_between_strategies": True,
+            "distribution_status": "Согласованные сценарные допущения, не эмпирическая калибровка",
+        },
+    }

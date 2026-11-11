@@ -6,6 +6,12 @@ from math import isfinite
 
 import pytest
 
+from src.models.unit_economics import (
+    evaluate_route_level_economics, evaluate_scissor_hub_economics,
+    build_strategy_switching_matrix, run_monte_carlo_stress_test,
+)
+import pandas as pd
+
 from src.models.sj100_fleet import calculate_required_sj100_fleet, build_sj100_delivery_roadmap
 from src.models.unit_economics import (evaluate_hypotheses, simulate_fare_elasticity_curve,
     evaluate_digital_one_click_impact, project_path_to_top2_airline)
@@ -352,3 +358,240 @@ def test_conservative_deliveries_never_lead_base():
 def test_invalid_delivery_inputs(required, scenario):
     with pytest.raises(ValueError):
         build_sj100_delivery_roadmap(required, scenario)
+
+
+# Уровень 2: помаршрутные данные, «ножницы», сетка стратегий и стресс-тесты.
+
+
+@pytest.fixture
+def financial_routes():
+    return pd.DataFrame([
+        {"origin_iata": "KUF", "dest_iata": "PEE", "distance_km": 1000,
+         "freq": 1, "subsidy_eligible": True, "competitor_fare_rub": 9000,
+         "crj200_cask_advantage_pct": 30.0},
+        {"origin_iata": "UFA", "dest_iata": "OMS", "distance_km": 1000,
+         "freq": 2, "subsidy_eligible": False, "competitor_fare_rub": float("nan"),
+         "crj200_cask_advantage_pct": 32.0},
+    ])
+
+
+def test_route_level_economics_with_real_dev1_routes():
+    from src.parsers.build_dataset import get_network_routes
+    routes = get_network_routes("p2p")
+    original = routes.copy(deep=True)
+    assert len(routes) == 10
+    params = FinModelInput()
+    subsidized = evaluate_route_level_economics(params, routes)
+    zero = evaluate_route_level_economics(params, routes, subsidy_retention_pct=0)
+    pd.testing.assert_frame_equal(original, routes)
+    assert len(subsidized["routes_pnl"]) == 10
+    assert subsidized["total_cost_mln_rub"] == zero["total_cost_mln_rub"]
+    assert subsidized["total_ebitdar_no_subsidy_mln_rub"] == zero["total_ebitdar_mln_rub"]
+    subsidy = sum(row["annual_subsidy_mln_rub"] for row in subsidized["routes_pnl"])
+    assert subsidy == 75.4  # Единственный флаг GOJ->UFA, 520 * 145000.
+    assert subsidized["total_revenue_mln_rub"] - zero["total_revenue_mln_rub"] == pytest.approx(subsidy)
+    assert subsidized["avg_crj200_cask_advantage_pct"] == pytest.approx(30.62)
+    assert subsidized["profitable_without_subsidy_count"] == zero["profitable_routes_count"]
+    assert subsidized["profitable_routes_count"] >= zero["profitable_routes_count"]
+    assert sum(row["annual_passengers"] for row in subsidized["routes_pnl"]) == 449280
+    assert all(row["proof_source"] for row in subsidized["routes_pnl"])
+
+
+def test_route_accounting_and_subsidy_stress(financial_routes):
+    full = evaluate_route_level_economics(FinModelInput(), financial_routes)
+    half = evaluate_route_level_economics(FinModelInput(), financial_routes, subsidy_retention_pct=50)
+    first, second = full["routes_pnl"]
+    assert first["origin_iata"] == "KUF"  # прибыль выше благодаря субсидии
+    assert first["annual_flights"] == second["annual_flights"] == 520
+    assert first["annual_passengers"] == 44928
+    assert first["annual_cost_mln_rub"] == pytest.approx(418.9)  # 520*695000 + 57.5 млн
+    assert first["annual_revenue_mln_rub"] == pytest.approx(473.551936)
+    assert second["annual_revenue_mln_rub"] == pytest.approx(398.151936)
+    assert first["annual_subsidy_mln_rub"] == 75.4
+    assert second["annual_subsidy_mln_rub"] == 0
+    assert first["fare_vs_competitor_rub"] == -138
+    assert second["competitor_fare_rub"] is None
+    assert sum(row["allocated_fixed_cost_mln_rub"] for row in full["routes_pnl"]) == 115
+    for key in ("revenue", "cost", "ebitdar"):
+        field = f"annual_{key}_mln_rub" if key != "ebitdar" else "ebitdar_mln_rub"
+        assert full[f"total_{key}_mln_rub"] == pytest.approx(sum(r[field] for r in full["routes_pnl"]))
+    assert full["total_revenue_mln_rub"] - full["total_cost_mln_rub"] == pytest.approx(full["total_ebitdar_mln_rub"])
+    assert full["total_ebitdar_mln_rub"] - half["total_ebitdar_mln_rub"] == pytest.approx(37.7)
+    assert first["belf_with_subsidy_pct"] < first["belf_no_subsidy_pct"]
+    assert first["viable_without_subsidy"] is False
+    assert full["profitable_routes_count"] == 1
+    assert full["profitable_without_subsidy_count"] == 0
+
+
+def test_route_controls_and_data_missingness(financial_routes):
+    baseline = evaluate_route_level_economics(FinModelInput(), financial_routes)
+    cons = evaluate_route_level_economics(FinModelInput(scenario="conservative"), financial_routes)
+    assert cons["total_ebitdar_mln_rub"] < baseline["total_ebitdar_mln_rub"]
+    assert cons["total_cost_mln_rub"] > baseline["total_cost_mln_rub"]
+    fares = evaluate_route_level_economics(FinModelInput(avg_fare_rub=3500), financial_routes)
+    assert all(row["belf_no_subsidy_pct"] > 100 for row in fares["routes_pnl"])
+    missing = financial_routes.drop(columns=["freq", "competitor_fare_rub", "crj200_cask_advantage_pct"])
+    result = evaluate_route_level_economics(FinModelInput(active_routes_count=50), missing)
+    assert result["total_ebitdar_mln_rub"] == baseline["total_ebitdar_mln_rub"]
+    assert result["avg_crj200_cask_advantage_pct"] is None
+    assert result["cask_observed_routes_count"] == 0
+    assert all(row["dev1_weekly_departures"] is None for row in result["routes_pnl"])
+    fast = evaluate_route_level_economics(FinModelInput(weekly_freq_per_route=10), financial_routes)
+    assert sum(row["annual_flights"] for row in fast["routes_pnl"]) == 2080
+
+
+@pytest.mark.parametrize("retention", [-1, 101, float("nan"), float("inf"), True, "50"])
+def test_route_invalid_retention(financial_routes, retention):
+    with pytest.raises(ValueError):
+        evaluate_route_level_economics(FinModelInput(), financial_routes, subsidy_retention_pct=retention)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("distance_km", 0), ("distance_km", float("nan")), ("distance_km", float("inf")),
+    ("distance_km", "1000"), ("subsidy_eligible", "False"), ("subsidy_eligible", None),
+    ("origin_iata", "XXX1"), ("competitor_fare_rub", -1),
+    ("crj200_cask_advantage_pct", float("inf")),
+])
+def test_route_invalid_values(financial_routes, field, value):
+    bad = financial_routes.astype(object)
+    bad.at[0, field] = value
+    with pytest.raises(ValueError):
+        evaluate_route_level_economics(FinModelInput(), bad)
+
+
+def test_route_invalid_schema_and_duplicate_roundtrips(financial_routes):
+    for bad in ([], pd.DataFrame(), financial_routes.drop(columns="distance_km"),
+                pd.concat([financial_routes, financial_routes.iloc[:1]])):
+        with pytest.raises(ValueError):
+            evaluate_route_level_economics(FinModelInput(), bad)
+    reverse = financial_routes.copy()
+    reverse.loc[1, ["origin_iata", "dest_iata"]] = ["PEE", "KUF"]
+    with pytest.raises(ValueError, match="Обратные"):
+        evaluate_route_level_economics(FinModelInput(), reverse)
+
+
+@pytest.mark.parametrize("scenario", ["base", "conservative"])
+def test_scissor_hub_outperforms_classic_hub(cities, scenario):
+    original = [asdict(city) for city in cities]
+    result = evaluate_scissor_hub_economics(FinModelInput(scenario=scenario), cities)
+    hub, p2p, hybrid = (result[k] for k in ("classic_hub", "pure_p2p", "scissor_hybrid"))
+    assert hybrid["ebitdar_mln_rub"] > hub["ebitdar_mln_rub"]
+    assert hybrid["ebitdar_mln_rub"] > p2p["ebitdar_mln_rub"]
+    assert hybrid["required_aircraft_sj100"] == p2p["required_aircraft_sj100"] == 13
+    assert hub["required_aircraft_sj100"] == 15
+    assert hybrid["annual_passengers"] > p2p["annual_passengers"]
+    assert hybrid["fixed_cost_mln_rub"] == 163
+    assert result["assumptions"]["coordination_cost_mln_rub"] == 48
+    assert result["assumptions"]["blended_discount_pct"] == 1.5
+    assert result["scissor_evidence"]["iata"] == "KUF"
+    assert result["scissor_evidence"]["scissor_rank"] == 2
+    assert result["scissor_evidence"]["eligible_directed_pairs"] == 46
+    assert [asdict(city) for city in cities] == original
+
+
+def test_scissor_wave_costs_and_load_cap(cities):
+    for waves in (1, 2, 3):
+        result = evaluate_scissor_hub_economics(FinModelInput(), cities, scissor_waves_per_day=waves)
+        hybrid = result["scissor_hybrid"]
+        assert hybrid["effective_load_factor_pct"] == pytest.approx(86.4 + 1.8 * waves)
+        assert hybrid["fixed_cost_mln_rub"] == 115 + 24 * waves
+        assert hybrid["annual_revenue_mln_rub"] - hybrid["annual_cost_mln_rub"] == pytest.approx(hybrid["ebitdar_mln_rub"])
+    capped = evaluate_scissor_hub_economics(FinModelInput(load_factor_pct=98), cities)
+    assert capped["scissor_hybrid"]["effective_load_factor_pct"] == 95
+    assert capped["ebitdar_uplift_vs_p2p_mln_rub"] < 0  # не навязываем победителя
+
+
+def test_scissor_selected_city_joins_real_geometry():
+    from src.scoring.city_scorer import get_scored_cities
+    from src.schemas.contracts import ScoringWeights
+    cities = get_scored_cities(ScoringWeights())
+    result = evaluate_scissor_hub_economics(FinModelInput(), cities, scissor_hub_iata="KZN")
+    assert "KZN" in result["classic_hub"]["title"]
+    assert "KZN" in result["scissor_hybrid"]["title"]
+    assert result["scissor_evidence"]["scissor_rank"] == 5
+
+
+@pytest.mark.parametrize("waves", [0, 4, True, 1.5, float("nan")])
+def test_scissor_invalid_waves(cities, waves):
+    with pytest.raises(ValueError):
+        evaluate_scissor_hub_economics(FinModelInput(), cities, scissor_waves_per_day=waves)
+
+
+def test_scissor_invalid_city(cities):
+    with pytest.raises(ValueError):
+        evaluate_scissor_hub_economics(FinModelInput(), cities, scissor_hub_iata="XXX")
+
+
+def test_switching_matrix_and_monte_carlo_reproducibility(cities):
+    params = FinModelInput()
+    before = asdict(params)
+    matrix = build_strategy_switching_matrix(params, cities, frequencies=[6, 2], fares_rub=[6000, 8400, 12000])
+    assert matrix["frequencies"] == [6, 2]
+    assert len(matrix["winner_matrix"]) == 2
+    for i, freq in enumerate(matrix["frequencies"]):
+        for j, fare in enumerate(matrix["fares_rub"]):
+            result = evaluate_hypotheses(replace(params, weekly_freq_per_route=freq, avg_fare_rub=fare), cities)
+            assert matrix["winner_matrix"][i][j] == result.winner
+            assert matrix["ebitdar_diff_matrix"][i][j] == pytest.approx(result.p2p.ebitdar_mln_rub - result.hub.ebitdar_mln_rub)
+    default = build_strategy_switching_matrix(params, cities)
+    assert len(default["winner_matrix"]) == 9
+    assert all(len(row) == 8 for row in default["winner_matrix"])
+    assert default["p2p_win_share_pct"] == 100 * sum(v == "p2p" for row in default["winner_matrix"] for v in row) / 72
+    first = run_monte_carlo_stress_test(params, cities, seed=42)
+    assert first == run_monte_carlo_stress_test(params, cities, seed=42)
+    assert first != run_monte_carlo_stress_test(params, cities, seed=43)
+    assert first["p2p_prob_profitable_pct"] > first["hub_prob_profitable_pct"]
+    for code in ("p2p", "hub"):
+        assert 0 <= first[f"{code}_prob_profitable_pct"] <= 100
+        assert first[f"{code}_ebitdar_p5_p50_p95"] == sorted(first[f"{code}_ebitdar_p5_p50_p95"])
+    assert asdict(params) == before
+
+
+@pytest.mark.parametrize("freqs,fares", [([], [8400]), ([5], []), ([0], [8400]), ([True], [8400]), ([5], [float("nan")])])
+def test_invalid_matrix_axes(cities, freqs, fares):
+    with pytest.raises(ValueError):
+        build_strategy_switching_matrix(FinModelInput(), cities, freqs, fares)
+
+
+@pytest.mark.parametrize("n,seed", [(0, 42), (-1, 42), (True, 42), (1.5, 42), (5, True), (5, "42")])
+def test_invalid_monte_carlo_arguments(cities, n, seed):
+    with pytest.raises(ValueError):
+        run_monte_carlo_stress_test(FinModelInput(), cities, n_simulations=n, seed=seed)
+
+
+def test_monte_carlo_does_not_mutate_global_rng_and_handles_one_sample(cities):
+    import random
+    before = random.getstate()
+    r = run_monte_carlo_stress_test(FinModelInput(), cities, n_simulations=1)
+    assert before == random.getstate()
+    for code in ("p2p", "hub"):
+        q = r[f"{code}_ebitdar_p5_p50_p95"]
+        assert q[0] == q[1] == q[2]
+        assert r[f"{code}_prob_profitable_pct"] in (0, 100)
+
+
+def test_monte_carlo_zero_shocks_matches_contract(monkeypatch, cities):
+    import src.models.unit_economics as model
+    class NoShock:
+        def __init__(self, seed):
+            pass
+        def gauss(self, mean, std):
+            return 0
+        def uniform(self, low, high):
+            return 1.0
+    monkeypatch.setattr(model, "Random", NoShock)
+    r = model.run_monte_carlo_stress_test(FinModelInput(), cities, n_simulations=3)
+    assert r["p2p_ebitdar_p5_p50_p95"] == [1054.6] * 3
+    assert r["hub_ebitdar_p5_p50_p95"] == [154.9] * 3
+    assert r["p2p_prob_profitable_pct"] == r["hub_prob_profitable_pct"] == 100
+
+
+def test_stress_subsidies_and_variable_costs_are_applied_once():
+    from src.models.unit_economics import _calculate, _linear_quantiles
+    p = FinModelInput()
+    base = _calculate(p, "p2p")
+    cut = _calculate(p, "p2p", subsidy_retention=0)
+    assert base.ebitdar_mln_rub - cut.ebitdar_mln_rub == pytest.approx(490.1)
+    expensive = _calculate(p, "p2p", variable_cost_multiplier=1.2)
+    assert base.ebitdar_mln_rub - expensive.ebitdar_mln_rub == pytest.approx(660.4)  # 3302 * .2
+    assert _linear_quantiles([0, 100]) == [5, 50, 95]
