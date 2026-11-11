@@ -288,11 +288,13 @@ def test_growth_roadmap_targets_are_conditional_and_not_fleet_feasible(cities, s
     rows = project_path_to_top2_airline(params, cities)
     assert [r["wave_id"] for r in rows] == [0, 1, 2, 3]
     assert [r["routes_count"] for r in rows] == [0, 10, 65, 120]
-    assert rows[0]["total_pax_mln"] == 4.465
+    assert rows[0]["total_pax_mln"] == 2.7
     assert rows[0]["projected_revenue_bln_rub"] is None
     assert rows[1]["incremental_pax_mln"] == evaluate_hypotheses(params, cities).p2p.annual_passengers / 1e6
     assert rows[3]["market_share_pct"] >= 12.5
-    assert rows[3]["market_rank_rf"] == 2
+    assert rows[3]["market_rank_rf"] is None
+    assert rows[3]["reference_second_pax_mln"] == 13.8
+    assert not rows[3]["reference_exceeded_with_fleet"]
     assert rows[3]["fleet_total"] == 82
     assert rows[3]["fleet_gap"] > 0
     assert rows[3]["rank_is_conditional"]
@@ -301,8 +303,8 @@ def test_growth_roadmap_targets_are_conditional_and_not_fleet_feasible(cities, s
     assert rows[3]["fleet_constrained_market_share_pct"] < 11.8
     for row in rows[1:]:
         assert row["fleet_total"] == sum(row["fleet_breakdown"].values())
-        assert row["total_pax_mln"] == pytest.approx(4.465 + row["incremental_pax_mln"])
-        assert row["market_share_pct"] == pytest.approx(row["total_pax_mln"] / 108.9 * 100, abs=.001)
+        assert row["total_pax_mln"] == pytest.approx(2.7 + row["incremental_pax_mln"])
+        assert row["market_share_pct"] == pytest.approx(row["total_pax_mln"] / 108.85 * 100, abs=.001)
         assert row["market_rank_rf"] != 3 or row["market_share_pct"] > 8.5
         supported = row["fleet_supported_routes_count"]
         assert calculate_required_sj100_fleet(supported, row["weekly_freq_per_route"], False) <= row["fleet_total"]
@@ -352,3 +354,4 @@ def test_conservative_deliveries_never_lead_base():
 def test_invalid_delivery_inputs(required, scenario):
     with pytest.raises(ValueError):
         build_sj100_delivery_roadmap(required, scenario)
+

@@ -20,7 +20,7 @@ BELF — фактическая загрузка, не значение вход
 Пассажиры считаются по плечам, не как уникальные люди или O&D-поездки.
 Прирост доли — процентные пункты от фиксированных 108.9 млн пассажиров,
 при допущении, что весь поток новой сети дополнительный (без каннибализации).
-Базовая доля RW не нужна: в материалах расходятся 2.7 и 4.465 млн пассажиров.
+Для пути к №2 используется опубликованная база RW 2.7 млн за 2025 год.
 Все показатели годовые для полного года эксплуатации после поставок 2027-H2.
 top_cities проверяет выбор хаба; DTO не содержит маршрутного спроса/времени,
 поэтому рейтинг города не превращается в выдуманный коэффициент доходности.
@@ -44,7 +44,9 @@ from src.schemas.contracts import (
 
 WEEKS_PER_YEAR = 52
 TOTAL_RF_MARKET_PAX_2025 = 108_900_000
-RED_WINGS_BASE_PAX_2025 = 4_465_000  # База командного сценария, не новая статистика.
+RED_WINGS_BASE_PAX_2025 = 2_700_000  # Отчёт RW за 2025, опубликован 28.01.2026.
+SECOND_AIRLINE_PAX_2025 = 13_800_000  # «Победа», отдельная авиакомпания; не группа.
+TOP2_MARKET_PAX_2025 = 108_850_000  # Росавиация; старая unit-модель сохраняет округление 108.9 млн.
 MAX_LOAD_FACTOR_PCT = 95.0
 FARE_ELASTICITY = -0.65
 
@@ -273,38 +275,36 @@ def evaluate_digital_one_click_impact(
 
 
 # Целевые пороги и планы — допущения команды, не гарантии места/поставок.
-S7_REFERENCE_MARKET_SHARE_PCT = 11.8
-URAL_REFERENCE_MARKET_SHARE_PCT = 8.5
 
 
-def project_path_to_top2_airline(params: FinModelInput, top_cities: List[CityScoreDTO]) -> List[dict]:
-    """Обратный расчет масштаба: цель пассажиров -> частота -> проверка флота.
+def project_path_to_top2_airline(params: FinModelInput, top_cities: List[CityScoreDTO], *,
+    benchmark_growth_pct: float = 0.0, cannibalization_pct: float = 0.0) -> List[dict]:
+    """Сценарный обратный расчёт ёмкости, не прогноз рыночного места.
 
-    Волна 1 — исходный пилот без цифровых надбавок. Для волн 2/3 минимальная
-    частота >= входной, достигающая цели 9.15/14.15 млн, ищется в 1..21.
-    Смешанный флот — допущение: SJ-100=params.aircraft_seats, Ту-214=210,
-    МС-21=211 кресел. Средняя вместимость округляется; модель SJ-100 линейно
-    переносится на нее как приближение, не как доказанная экономика Ту/МС.
-    Масштабирование финансов и пассажиров идет из шаблона входной сети
-    пропорционально числу маршрутов (включая фиксированные расходы).
-    Результат — годовой темп после полного развертывания, не факт за период.
-    fleet_total — план выделенного флота, fleet_required_model — расчетная
-    потребность по принятой утилизации. fleet_gap>0 запрещает трактовать
-    расчетную долю/ранг как обеспеченный прогноз. Цели не подменяют результаты.
-    База 28 бортов не суммируется с выделенным флотом волн 1–3; это отдельная
-    существующая сеть, ее выручка не известна и в projected_* не включена.
+    База RW 2.7 млн, ориентир «Победы» 13.8 млн (2025).
+    Порог конкурента растёт к концу каждой волны; чистый прирост исключает
+    заданную долю перетока. Спрос и поставки не подтверждены. Общая экономика
+    остаётся только экономикой новой сети, без потерь старой сети от перетока.
+    Калибровка флота и линейное масштабирование смешанного парка — допущения
+    Dev 3, не эксплуатационный расчёт. Точное место никогда не присваивается.
     """
+    for name, value in (("benchmark_growth_pct", benchmark_growth_pct),
+                        ("cannibalization_pct", cannibalization_pct)):
+        _finite_number(name, value)
+        if not 0 <= value <= (50 if name == "benchmark_growth_pct" else 100):
+            raise ValueError(f"{name}: недопустимый процент")
+    retained = 1 - cannibalization_pct / 100
     pilot = evaluate_hypotheses(params, top_cities).p2p
     rows = [{
-        "wave_id": 0, "period": "2025", "title": "База командного сценария",
+        "wave_id": 0, "period": "2025", "title": "RW: опубликованный результат 2025",
         "routes_count": 0, "fleet_total": 28, "fleet_breakdown": {"existing": 28},
         "incremental_pax_mln": 0.0, "total_pax_mln": RED_WINGS_BASE_PAX_2025 / 1e6,
-        "market_share_pct": round(RED_WINGS_BASE_PAX_2025 / TOTAL_RF_MARKET_PAX_2025 * 100, 2),
+        "market_share_pct": round(RED_WINGS_BASE_PAX_2025 / TOP2_MARKET_PAX_2025 * 100, 2),
         "projected_revenue_bln_rub": None, "projected_ebitdar_bln_rub": None,
-        "market_rank_rf": None, "rank_note": "Топ-5/6 — оценка ТЗ; полного рейтинга нет",
+        "market_rank_rf": None, "rank_note": "Будущий рейтинг не вычисляется по одному конкуренту",
     }]
     plans = [
-        (1, "2026–2027", "Ядро Поволжье — Урал", params.active_routes_count,
+        (1, "2027–2028", "Первый полный год пилотной сети", params.active_routes_count,
          {"SJ-100": pilot.required_aircraft_sj100}, None),
         (2, "2028–2029", "Федеральная P2P-сеть + Virtual Interline", 65,
          {"SJ-100": 36, "Ту-214": 12}, 9.15),
@@ -312,6 +312,10 @@ def project_path_to_top2_airline(params: FinModelInput, top_cities: List[CitySco
          {"SJ-100": 55, "Ту-214": 15, "МС-21": 12}, 14.15),
     ]
     for wave, period, title, routes, fleet, target in plans:
+        end_year = {1: 2028, 2: 2029, 3: 2030}[wave]
+        reference = SECOND_AIRLINE_PAX_2025 / 1e6 * (1 + benchmark_growth_pct / 100) ** (end_year - 2025)
+        if wave == 3:
+            target = reference + 0.000001
         fleet_total = sum(fleet.values())
         seat_map = {"SJ-100": params.aircraft_seats, "Ту-214": 210, "МС-21": 211}
         average_seats = round(sum(seat_map[k] * count for k, count in fleet.items()) / fleet_total)
@@ -322,18 +326,18 @@ def project_path_to_top2_airline(params: FinModelInput, top_cities: List[CitySco
             for frequency in range(params.weekly_freq_per_route, 22):
                 template = replace(params, aircraft_seats=average_seats, weekly_freq_per_route=frequency)
                 metrics = evaluate_digital_one_click_impact(template, top_cities)["p2p_digital"]
-                if (RED_WINGS_BASE_PAX_2025 + metrics["annual_passengers"] * scale) / 1e6 >= target:
+                if (RED_WINGS_BASE_PAX_2025 + metrics["annual_passengers"] * scale * retained) / 1e6 >= target:
                     break
-        increment = metrics["annual_passengers"] * scale
+        gross_increment = metrics["annual_passengers"] * scale
+        increment = gross_increment * retained
         total = RED_WINGS_BASE_PAX_2025 + increment
-        share = total / TOTAL_RF_MARKET_PAX_2025 * 100
+        share = total / TOP2_MARKET_PAX_2025 * 100
         needed = calculate_required_sj100_fleet(routes, frequency, False)
         gap = max(0, needed - fleet_total)
         supported_routes = min(routes, int(fleet_total * ROUND_TRIPS_PER_AIRCRAFT_WEEK
                                            / (frequency * P2P_FLEET_FACTOR)))
         constrained_total = RED_WINGS_BASE_PAX_2025 + increment * supported_routes / routes
-        # Полный рейтинг не известен: 2/3 — условно при неизменных конкурентах.
-        rank = 2 if share > S7_REFERENCE_MARKET_SHARE_PCT else 3 if share > URAL_REFERENCE_MARKET_SHARE_PCT else None
+        rank = None  # Превышение исторического порога не доказывает второе место.
         rows.append({
             "wave_id": wave, "period": period, "title": title,
             "routes_count": routes, "fleet_total": fleet_total, "fleet_breakdown": fleet,
@@ -342,16 +346,23 @@ def project_path_to_top2_airline(params: FinModelInput, top_cities: List[CitySco
             "projected_revenue_bln_rub": round(metrics["annual_revenue_mln_rub"] * scale / 1000, 6),
             "projected_ebitdar_bln_rub": round(metrics["ebitdar_mln_rub"] * scale / 1000, 6),
             "market_rank_rf": rank, "rank_is_conditional": True,
+            "gross_incremental_pax_mln": round(gross_increment / 1e6, 6),
+            "reference_second_pax_mln": reference,
+            "gap_to_reference_mln": max(0.0, reference - constrained_total / 1e6),
+            "reference_exceeded_with_fleet": constrained_total / 1e6 > reference,
+            "benchmark_growth_pct": benchmark_growth_pct,
+            "cannibalization_pct": cannibalization_pct,
             "weekly_freq_per_route": frequency, "average_aircraft_seats": average_seats,
             "fleet_required_model": needed, "fleet_gap": gap,
             "fleet_capacity_feasible": gap == 0,
             "fleet_supported_routes_count": supported_routes,
             "fleet_constrained_total_pax_mln": round(constrained_total / 1e6, 6),
-            "fleet_constrained_market_share_pct": round(constrained_total / TOTAL_RF_MARKET_PAX_2025 * 100, 3),
+            "fleet_constrained_market_share_pct": round(constrained_total / TOP2_MARKET_PAX_2025 * 100, 3),
             "target_total_pax_mln": target,
             "target_reached": target is None or total / 1e6 >= target,
             "digital_enabled": wave > 1,
             "financial_scope": "Только новая сеть, годовой темп; база 2025 не включена",
-            "assumptions": "Постоянный рынок 108.9 млн, S7 11.8%, Уральские 8.5%; нет каннибализации; поставки и спрос не подтверждены; до 2027-H2 только перераспределение существующего флота.",
+            "assumptions": "Рынок для доли фиксирован 108.85 млн; ориентир «Победы» 13.8 млн за 2025 с заданным ростом; переток учтён в пассажирах; поставки и спрос не подтверждены; до 2027-H2 только перераспределение существующего флота.",
         })
     return rows
+
