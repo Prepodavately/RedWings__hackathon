@@ -5,14 +5,13 @@ from itertools import product
 from math import isfinite
 
 import pytest
+import pandas as pd
 
 from src.models.unit_economics import (
     evaluate_route_level_economics, evaluate_scissor_hub_economics,
     build_strategy_switching_matrix, run_monte_carlo_stress_test,
     run_financial_monte_carlo, evaluate_svx_kuf_cannibalization, get_assumptions_audit_table,
 )
-import pandas as pd
-
 from src.models.sj100_fleet import calculate_required_sj100_fleet, build_sj100_delivery_roadmap
 from src.models.unit_economics import (evaluate_hypotheses, simulate_fare_elasticity_curve,
     evaluate_digital_one_click_impact, project_path_to_top2_airline)
@@ -760,7 +759,7 @@ def test_assumptions_audit_sources_and_calibration_limitations():
         assert row["source_urls"] and row["observation_weeks"]
         assert row["weekly_flights_observed"] > 0
         assert row["model_flight_cost_rub"] == 385000 + 310 * row["distance_km"]
-        assert row["implied_crj_premium_vs_sj_pct"] > row["sj100_saving_vs_crj_pct"]
+        assert row["implied_crj_premium_vs_sj_pct"] > row["sj100_saving_vs_sj_pct" if "sj100_saving_vs_sj_pct" in row else "sj100_saving_vs_crj_pct"]
     assert all(len(value) == 64 for value in result["source_sha256"].values())
     assert len({row["assumption"] for row in result["assumptions"]}) == len(result["assumptions"])
     assert all(row["source"] and row["limitation"] for row in result["assumptions"])
