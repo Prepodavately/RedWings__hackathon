@@ -163,14 +163,13 @@ def _gravity_boundaries():
     return json.loads(path.read_text(encoding='utf-8'))['layers']
 
 
-def _geo_base(fit_routes=False):
+def _geo_base():
     figure = go.Figure()
     figure.update_geos(
         projection_type='mercator', showland=True, landcolor='#edf2f7',
         showocean=True, oceancolor='#d8e8fa', showlakes=True, lakecolor='#d8e8fa',
         showcountries=True, countrycolor='#94a3b8', showcoastlines=True, coastlinecolor='#64748b',
-        fitbounds='locations' if fit_routes else False,
-        **({} if fit_routes else {'lonaxis_range': [26, 82], 'lataxis_range': [40, 64]}),
+        fitbounds='locations',
     )
     figure.update_layout(height=610, margin=dict(l=0, r=0, t=10, b=20),
                          legend=dict(orientation='h', y=-0.04))
@@ -194,7 +193,7 @@ def _city_layer(figure, features, cities, *, geographic=True):
         ))
 
 
-def _geo_routes(figure, routes, status_column, styles):
+def _route_layer(figure, routes, status_column, styles, *, geographic=True):
     for status, group in routes.groupby(status_column):
         color, width, dashed, label = styles[status]
         lat, lon, hover = [], [], []
@@ -203,8 +202,10 @@ def _geo_routes(figure, routes, status_column, styles):
             lat.extend(ys)
             lon.extend(xs)
             hover.extend([f'{row.origin_city} ↔ {row.dest_city}<br>{row.distance_km:.0f} км · {label}'] * len(ys))
-        figure.add_trace(go.Scattergeo(
-            lat=lat, lon=lon, mode='lines', line=dict(color=color, width=width, dash="dash" if dashed else "solid"),
+        coordinates = {'lat': lat, 'lon': lon} if geographic else {'y': lat, 'x': lon}
+        trace = go.Scattergeo if geographic else go.Scatter
+        figure.add_trace(trace(
+            **coordinates, mode='lines', line=dict(color=color, width=width, dash='dash' if dashed else 'solid'),
             name=label, hovertext=hover, hoverinfo='text',
         ))
 
@@ -240,28 +241,28 @@ def _render_routes_gap(market, summary, features, cities):
     focus = st.selectbox('Маршрут для сравнения с пересадкой в Москве', options,
                          format_func=lambda key: names.get(key, 'Выберите маршрут'), key='rw_gap_focus')
 
-    figure = _geo_base()
-    figure.update_layout(clickmode='event+select')
-    _geo_routes(figure, visible, 'rw_network_status', GAP_STYLES)
+    figure = go.Figure()
+    _boundary_layer(figure)
+    _field_axes(figure, [26, 82], [40, 64])
+    figure.update_layout(clickmode='event+select', plot_bgcolor='#edf2f7')
+    _route_layer(figure, visible, 'rw_network_status', GAP_STYLES, geographic=False)
     if focus:
         row = visible.loc[visible['map_pair'].eq(focus)].iloc[0]
         moscow = (55.7558, 37.6173)
-        first = _dashed_leg((row.lat_o, row.lon_o), moscow)
-        second = _dashed_leg(moscow, (row.lat_d, row.lon_d))
-        figure.add_trace(go.Scattergeo(
-            lat=first[0] + second[0], lon=first[1] + second[1], mode='lines',
-            line=dict(color='#dc2626', width=3),
+        figure.add_trace(go.Scatter(
+            y=[row.lat_o, moscow[0], row.lat_d], x=[row.lon_o, moscow[1], row.lon_d],
+            mode='lines', line=dict(color='#dc2626', width=3, dash='dash'),
             name=f'Через Москву · ×{row.moscow_detour_ratio:.2f}', hoverinfo='name',
         ))
-        figure.add_trace(go.Scattergeo(
-            lat=[moscow[0]], lon=[moscow[1]], mode='markers+text', text=['Москва'],
+        figure.add_trace(go.Scatter(
+            y=[moscow[0]], x=[moscow[1]], mode='markers+text', text=['Москва'],
             textposition='top left', marker=dict(size=10, color='#dc2626'), showlegend=False,
         ))
-    _city_layer(figure, features, cities)
-    # Plotly selects points, so a small point on each route also gives keyboard users a selectbox fallback.
-    figure.add_trace(go.Scattergeo(
-        lat=(visible['lat_o'] + visible['lat_d']) / 2,
-        lon=(visible['lon_o'] + visible['lon_d']) / 2, mode='markers',
+    _city_layer(figure, features, cities, geographic=False)
+    # Plotly selects markers. Give each route a target and keep the selectbox for keyboard access.
+    figure.add_trace(go.Scatter(
+        y=(visible['lat_o'] + visible['lat_d']) / 2,
+        x=(visible['lon_o'] + visible['lon_d']) / 2, mode='markers',
         marker=dict(size=8, color='#64748b', line=dict(color='white', width=1)),
         customdata=visible['map_pair'].tolist(), text=[names[key] for key in visible['map_pair']],
         hoverinfo='text', name='Нажмите точку маршрута', showlegend=False,
@@ -309,7 +310,7 @@ def _render_aircraft_range(market, routes, features, cities, spec, params, assum
     base = st.selectbox('Базовый узел', list(nodes.index), index=list(nodes.index).index(params.hub_iata),
                         format_func=lambda code: f'{nodes.at[code, "city_name"]} ({code})', key='range_base')
     node = nodes.loc[base]
-    figure = _geo_base(fit_routes=True)
+    figure = _geo_base()
     for radius, color, label in [
         (spec.opt_low_km, '#059669', 'Нижняя граница оптимума'),
         (spec.opt_high_km, '#059669', 'Верхняя граница оптимума'),
@@ -321,7 +322,7 @@ def _render_aircraft_range(market, routes, features, cities, spec, params, assum
             line=dict(color=color, width=2, dash='dash'), name=f'{label} · {radius:,} км',
             hoverinfo='name',
         ))
-    _geo_routes(figure, market, 'aircraft_range_status', RANGE_STYLES)
+    _route_layer(figure, market, 'aircraft_range_status', RANGE_STYLES)
     _city_layer(figure, features, cities)
     figure.add_trace(go.Scattergeo(lat=[node.lat], lon=[node.lon], mode='markers', name=f'База {base}',
                                   marker=dict(color='#fbbf24', size=14, symbol='star',
@@ -343,17 +344,7 @@ def _render_aircraft_range(market, routes, features, cities, spec, params, assum
     st.caption('Потребность в бортах использует единую норму SJ-100. При отсутствии предложений модель показывает минимальный резерв.')
 
 
-def _render_gravity_lens(features, routes, cities, proposals, summary):
-    controls = render_gravity_controls()
-    parameters = {key: controls[key] for key in ('gamma', 'lam', 'radius_km', 'mode', 'exclude_existing_rw')}
-    field = _gravity_field(features, routes, cities, parameters)
-    figure = go.Figure(go.Contour(
-        x=field.lons, y=field.lats, z=field.z_values, zmin=-100, zmax=100, autocontour=False,
-        contours=dict(start=-100, end=100, size=12.5, coloring='fill'),
-        colorscale=SPECTRUM, line=dict(width=.7, color='rgba(15,23,42,0.45)'),
-        colorbar=dict(title='Индекс', tickvals=[-100, -50, 0, 50, 100]),
-        hovertemplate='Долгота %{x:.1f}°<br>Широта %{y:.1f}°<br>Индекс %{z:.1f}<extra></extra>',
-    ))
+def _boundary_layer(figure):
     for name, lines in _gravity_boundaries().items():
         lon, lat = [], []
         for line in lines:
@@ -366,6 +357,27 @@ def _render_gravity_lens(features, routes, cities, proposals, summary):
             x=lon, y=lat, mode='lines', line=dict(color='#0f172a', width=1.05 if name == 'countries' else .8),
             hoverinfo='skip', showlegend=False,
         ))
+
+
+def _field_axes(figure, longitude_range, latitude_range):
+    figure.update_layout(height=630, margin=dict(l=10, r=10, t=10, b=25),
+                         legend=dict(orientation='h', y=-.04), dragmode='pan')
+    figure.update_xaxes(range=longitude_range, visible=False)
+    figure.update_yaxes(range=latitude_range, visible=False)
+
+
+def _render_gravity_lens(features, routes, cities, proposals, summary):
+    controls = render_gravity_controls()
+    parameters = {key: controls[key] for key in ('gamma', 'lam', 'radius_km', 'mode', 'exclude_existing_rw')}
+    field = _gravity_field(features, routes, cities, parameters)
+    figure = go.Figure(go.Contour(
+        x=field.lons, y=field.lats, z=field.z_values, zmin=-100, zmax=100, autocontour=False,
+        contours=dict(start=-100, end=100, size=12.5, coloring='fill'),
+        colorscale=SPECTRUM, line=dict(width=.7, color='rgba(15,23,42,0.45)'),
+        colorbar=dict(title='Индекс', tickvals=[-100, -50, 0, 50, 100]),
+        hovertemplate='Долгота %{x:.1f}°<br>Широта %{y:.1f}°<br>Индекс %{z:.1f}<extra></extra>',
+    ))
+    _boundary_layer(figure)
     if controls['show_proposals']:
         lon, lat = [], []
         for route in proposals.itertuples():
@@ -379,10 +391,7 @@ def _render_gravity_lens(features, routes, cities, proposals, summary):
         marker=dict(size=15, symbol='diamond', color='#fde047', line=dict(color='#0f172a', width=2)),
         hovertemplate='Барицентр · %{y:.2f}° с. ш., %{x:.2f}° в. д.<extra></extra>',
     ))
-    figure.update_layout(height=630, margin=dict(l=10, r=10, t=10, b=25),
-                         legend=dict(orientation='h', y=-.04), dragmode='pan')
-    figure.update_xaxes(range=[field.lons[0], field.lons[-1]], visible=False)
-    figure.update_yaxes(range=[field.lats[0], field.lats[-1]], visible=False)
+    _field_axes(figure, [field.lons[0], field.lons[-1]], [field.lats[0], field.lats[-1]])
     st.plotly_chart(figure, use_container_width=True, config=MAP_CONFIG, key='gravity_field_map')
     st.caption('Нормированный сценарный индекс от −100 до +100. '
                'Карта показывает потенциал или относительный дефицит в зависимости от режима. Границы: Natural Earth 1:50m.')
