@@ -42,7 +42,7 @@ def render_route_network_map(routes_df: pd.DataFrame, scored_cities: List[CitySc
     focus = st.selectbox('🔍 Фокус на маршруте (Сравнение с крюком через Москву)', options,
         format_func=lambda value: names.get(value, value), key='map_focus')
     figure = go.Figure()
-    _territorial_claims_layer(figure, geographic=True)
+    _boundary_layer(figure, geographic=True)
     for index, row in enumerate(routes_df.itertuples()):
         figure.add_trace(go.Scattergeo(lat=[row.lat_o, row.lat_d], lon=[row.lon_o, row.lon_d],
             mode='lines', line=dict(width=2, color='#6199d4'), opacity=.65,
@@ -80,11 +80,11 @@ def render_route_network_map(routes_df: pd.DataFrame, scored_cities: List[CitySc
             hoverinfo='text', name='Топ-3 скоринга' if top else 'Другие кандидаты'))
     figure.update_geos(lonaxis=dict(range=[26, 82]), lataxis=dict(range=[41, 63]),
         projection_type='mercator', showland=True, landcolor='#e7edf3',
-        showocean=True, oceancolor='#c8ddeb', showcountries=True, countrycolor='#a1b4c4',
+        showocean=True, oceancolor='#c8ddeb', showcountries=False,
         showlakes=True, lakecolor='#c8ddeb', coastlinecolor='#8aa9c1', bgcolor='rgba(0,0,0,0)')
-    figure.update_layout(height=580, margin=dict(l=0, r=0, t=10, b=10), legend=dict(orientation='h', y=-.04))
-    st.plotly_chart(figure, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
-    _territorial_claims_caption()
+    figure.update_layout(height=580, margin=dict(l=0, r=0, t=10, b=10),
+                         legend=dict(orientation='h', y=-.04), dragmode=False)
+    st.plotly_chart(figure, use_container_width=True, config=MAP_CONFIG)
     if len(mapped) < len(scored_cities):
         st.caption(f'Координаты доступны для {len(mapped)} из {len(scored_cities)} городов; остальные не нанесены на карту.')
     if selected is not None:
@@ -141,7 +141,12 @@ SPECTRUM = [
     [0.45, '#16c45a'], [0.58, '#65d63a'], [0.72, '#e6e024'],
     [0.84, '#f59e0b'], [0.93, '#ea580c'], [1.00, '#cc1b1b'],
 ]
-MAP_CONFIG = {'displaylogo': False, 'scrollZoom': True}
+MAP_CONFIG = {
+    'displaylogo': False,
+    'displayModeBar': False,
+    'scrollZoom': False,
+    'doubleClick': False,
+}
 
 
 @st.cache_data(max_entries=32, show_spinner=False)
@@ -170,11 +175,11 @@ def _geo_base():
     figure.update_geos(
         projection_type='mercator', showland=True, landcolor='#edf2f7',
         showocean=True, oceancolor='#d8e8fa', showlakes=True, lakecolor='#d8e8fa',
-        showcountries=True, countrycolor='#94a3b8', showcoastlines=True, coastlinecolor='#64748b',
-        fitbounds='locations',
+        showcountries=False, showcoastlines=True, coastlinecolor='#64748b',
+        fitbounds=False,
     )
     figure.update_layout(height=610, margin=dict(l=0, r=0, t=10, b=20),
-                         legend=dict(orientation='h', y=-0.04))
+                         legend=dict(orientation='h', y=-0.04), dragmode=False)
     return figure
 
 
@@ -245,7 +250,6 @@ def _render_routes_gap(market, summary, features, cities):
 
     figure = go.Figure()
     _boundary_layer(figure)
-    _territorial_claims_layer(figure)
     _field_axes(figure, [26, 82], [40, 64])
     figure.update_layout(clickmode='event+select', plot_bgcolor='#edf2f7')
     _route_layer(figure, visible, 'rw_network_status', GAP_STYLES, geographic=False)
@@ -272,7 +276,6 @@ def _render_routes_gap(market, summary, features, cities):
     ))
     st.plotly_chart(figure, use_container_width=True, config=MAP_CONFIG, key='rw_gap_map',
                     on_select=_set_route_focus, selection_mode='points')
-    _territorial_claims_caption()
     if visible.empty:
         st.info('В этом фильтре нет маршрутов при выбранных параметрах.')
     if focus:
@@ -315,25 +318,32 @@ def _render_aircraft_range(market, routes, features, cities, spec, params, assum
                         format_func=lambda code: f'{nodes.at[code, "city_name"]} ({code})', key='range_base')
     node = nodes.loc[base]
     figure = _geo_base()
-    _territorial_claims_layer(figure, geographic=True)
+    ring_lons, ring_lats = [], []
     for radius, color, label in [
         (spec.opt_low_km, '#059669', 'Нижняя граница оптимума'),
         (spec.opt_high_km, '#059669', 'Верхняя граница оптимума'),
         (spec.max_km, '#334155', 'Максимальная дальность'),
     ]:
         lat, lon = _range_ring(node.lat, node.lon, radius)
+        ring_lons.extend(lon)
+        ring_lats.extend(lat)
         figure.add_trace(go.Scattergeo(
             lat=lat, lon=lon, mode='lines',
             line=dict(color=color, width=2, dash='dash'), name=f'{label} · {radius:,} км',
             hoverinfo='name',
         ))
+    # Set the viewport from the chosen aircraft, base and market, excluding boundary traces.
+    figure.update_geos(
+        lonaxis_range=[min(26, min(ring_lons) - 2), max(82, max(ring_lons) + 2)],
+        lataxis_range=[min(40, min(ring_lats) - 2), min(88, max(64, max(ring_lats) + 2))],
+    )
+    _boundary_layer(figure, geographic=True)
     _route_layer(figure, market, 'aircraft_range_status', RANGE_STYLES)
     _city_layer(figure, features, cities)
     figure.add_trace(go.Scattergeo(lat=[node.lat], lon=[node.lon], mode='markers', name=f'База {base}',
                                   marker=dict(color='#fbbf24', size=14, symbol='star',
                                               line=dict(color='#0f172a', width=1))))
     st.plotly_chart(figure, use_container_width=True, config=MAP_CONFIG, key='aircraft_range_map')
-    _territorial_claims_caption()
     st.caption('Кольца показывают расстояния от выбранной базы. Цвет каждого плеча учитывает расстояние между его концами. '
                'Пороги дальности взяты из сценарного каталога Dev 3.')
     results = _aircraft_comparison(routes, assumptions)
@@ -350,59 +360,26 @@ def _render_aircraft_range(market, routes, features, cities, spec, params, assum
     st.caption('Потребность в бортах использует единую норму SJ-100. При отсутствии предложений модель показывает минимальный резерв.')
 
 
-@st.cache_data(show_spinner=False)
-def _territorial_claims():
-    path = Path(__file__).with_name('assets') / 'territorial_claims.json'
-    return json.loads(path.read_text(encoding='utf-8'))
-
-
-def _territorial_claims_layer(figure, *, geographic=False):
+def _boundary_layer(figure, *, geographic=False):
     trace = go.Scattergeo if geographic else go.Scatter
-    for index, region in enumerate(_territorial_claims()['regions']):
-        lon, lat = [], []
-        for ring in region['rings']:
-            xs, ys = zip(*ring)
-            lon.extend([*xs, None])
-            lat.extend([*ys, None])
-        coordinates = {'lon': lon, 'lat': lat} if geographic else {'x': lon, 'y': lat}
-        figure.add_trace(trace(
-            **coordinates, mode='lines', fill='toself', fillcolor='rgba(168,85,247,0.19)',
-            line=dict(color='#581c87', width=1.7, dash='dot'),
-            name='Территориальные претензии России', legendgroup='territorial_claims',
-            showlegend=index == 0, text=region['name'], hoverinfo='text',
-            **({} if geographic else {'hoveron': 'fills'}),
-        ))
-
-
-def _territorial_claims_caption():
-    source = _territorial_claims()['source']
-    st.caption('Фиолетовый слой показывает административные границы Крыма, Севастополя и четырёх '
-               'областей Украины, на которые претендует Россия. Генассамблея ООН подтвердила '
-               'территориальную целостность Украины в резолюциях [68/262](https://docs.un.org/A/RES/68/262) '
-               'и [ES-11/4](https://docs.un.org/A/RES/ES-11/4). '
-               f'Геометрия: [Natural Earth]({source}).')
-
-
-def _boundary_layer(figure):
     for name, lines in _gravity_boundaries().items():
         lon, lat = [], []
         for line in lines:
-            for x, y in line:
-                lon.append(x)
-                lat.append(y)
-            lon.append(None)
-            lat.append(None)
-        figure.add_trace(go.Scatter(
-            x=lon, y=lat, mode='lines', line=dict(color='#0f172a', width=1.05 if name == 'countries' else .8),
-            hoverinfo='skip', showlegend=False,
+            xs, ys = zip(*line)
+            lon.extend([*xs, None])
+            lat.extend([*ys, None])
+        coords = {'lon': lon, 'lat': lat} if geographic else {'x': lon, 'y': lat}
+        figure.add_trace(trace(
+            **coords, mode='lines', line=dict(color='#0f172a', width=1.05 if name != 'lakes' else .8),
+            hoverinfo='skip', showlegend=False, name='Границы и береговая линия',
         ))
 
 
 def _field_axes(figure, longitude_range, latitude_range):
     figure.update_layout(height=630, margin=dict(l=10, r=10, t=10, b=25),
-                         legend=dict(orientation='h', y=-.04), dragmode='pan')
-    figure.update_xaxes(range=longitude_range, visible=False)
-    figure.update_yaxes(range=latitude_range, visible=False)
+                         legend=dict(orientation='h', y=-.04), dragmode=False)
+    figure.update_xaxes(range=longitude_range, visible=False, fixedrange=True)
+    figure.update_yaxes(range=latitude_range, visible=False, fixedrange=True)
 
 
 def _render_gravity_lens(features, routes, cities, proposals, summary):
@@ -417,7 +394,6 @@ def _render_gravity_lens(features, routes, cities, proposals, summary):
         hovertemplate='Долгота %{x:.1f}°<br>Широта %{y:.1f}°<br>Индекс %{z:.1f}<extra></extra>',
     ))
     _boundary_layer(figure)
-    _territorial_claims_layer(figure)
     if controls['show_proposals']:
         lon, lat = [], []
         for route in proposals.itertuples():
@@ -433,9 +409,8 @@ def _render_gravity_lens(features, routes, cities, proposals, summary):
     ))
     _field_axes(figure, [field.lons[0], field.lons[-1]], [field.lats[0], field.lats[-1]])
     st.plotly_chart(figure, use_container_width=True, config=MAP_CONFIG, key='gravity_field_map')
-    _territorial_claims_caption()
     st.caption('Нормированный сценарный индекс от −100 до +100. '
-               'Карта показывает потенциал или относительный дефицит в зависимости от режима. Границы: Natural Earth 1:50m.')
+               'Карта показывает потенциал или относительный дефицит в зависимости от режима. Геометрия: Natural Earth.')
     if controls['exclude_existing_rw']:
         st.caption(f'В витрине {summary.existing_rw_count} существующих пар RW. '
                    'При включённом фильтре поле Dev 2 строит потенциал только по направлениям с нулём рейсов RW и конкурентов.')
@@ -462,4 +437,5 @@ def render_network_lenses(features: pd.DataFrame, routes: pd.DataFrame,
         _render_aircraft_range(market, routes, features, cities, spec, params, assumptions)
     else:
         _render_gravity_lens(features, routes, cities, proposals, summary)
+    st.caption('Контур РФ показан по официальной позиции России. Геометрия: Natural Earth.')
     return aircraft_id, proposals['pair_key'].tolist()
