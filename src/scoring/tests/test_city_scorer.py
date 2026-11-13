@@ -1,5 +1,6 @@
 """Проверки свойств скоринга; синтетические значения не являются данными городов."""
 import json
+from dataclasses import asdict, replace
 from pathlib import Path
 import sys
 
@@ -13,6 +14,285 @@ from src.scoring.city_scorer import (
     score_cities, weight_sensitivity,
 )
 from src.scoring.normalizer import distance_sweet_spot_score, min_max_normalize
+from src.scoring.city_scorer import (
+    calculate_effective_population, calculate_gravity_matrix,
+    compute_gravity_anomaly_field, calculate_network_graph_metrics,
+)
+
+
+@pytest.fixture
+def live_network():
+    root = Path(__file__).resolve().parents[3]
+    cities = pd.read_parquet(root / "data/processed/cities_features.parquet")
+    routes = pd.read_parquet(root / "data/processed/routes_proof.parquet")
+    with pytest.warns(UserWarning, match="exploratory"):
+        scores = get_scored_cities(ScoringWeights(), data=cities)
+    return cities, routes, scores
+
+
+@pytest.fixture
+def small_network():
+    """Три синтетических города: цепь AAA—KUF—BBB, у AAA—BBB нет рейса."""
+    cities = pd.DataFrame({
+        "iata": ["AAA", "KUF", "BBB"], "city_name": ["А", "Хаб", "Б"],
+        "population_city_mln": [1., 2., 3.], "agglomeration_members": "",
+        "avg_wage_rub_region": 50000., "airport_pax_mln": 1.,
+        "lat": [50., 53., 56.], "lon": [40., 45., 50.], "dist_to_mow_km": 1000.,
+    })
+    rows = []
+    for a, b, time, distance, own in [("AAA", "KUF", 2., 100., 2.),
+                                     ("KUF", "BBB", 3., 150., 2.),
+                                     ("AAA", "BBB", 4., 220., 0.)]:
+        for origin, dest in ((a, b), (b, a)):
+            rows.append(dict(origin_iata=origin, dest_iata=dest, air_door_to_door_h=time,
+                             distance_km=distance, own_flights_weekly=own,
+                             competitor_flights_weekly=0., moscow_via_time_h=10.,
+                             rail_travel_hours=8., access_time_origin_h=.25, access_time_dest_h=.5))
+    scores = [CityScoreDTO(code, code, "Тест", 1., 1., 50., i + 1, True)
+              for i, code in enumerate(cities.iata)]
+    return cities, pd.DataFrame(rows), scores
+
+
+@pytest.mark.parametrize("mode", ["potential", "anomaly"])
+def test_gravity_field_grid_bounds(live_network, mode):
+    cities, routes, scores = live_network
+    before_c, before_r = cities.copy(deep=True), routes.copy(deep=True)
+    field = compute_gravity_anomaly_field(cities, routes, scores, mode=mode)
+    z = np.asarray(field.z_values)
+    assert z.shape == (110, 160)
+    assert (field.lons[0], field.lons[-1], field.lats[0], field.lats[-1]) == (26., 82., 40., 64.)
+    assert isinstance(field.z_values, tuple) and isinstance(field.z_values[0], tuple)
+    assert np.isfinite(z).all() and z.min() >= -100 and z.max() <= 100
+    assert np.max(np.abs(z)) == pytest.approx(100)
+    if mode == "potential":
+        assert z.min() == pytest.approx(-100)
+    else:
+        assert z.mean() == pytest.approx(0, abs=1e-10)
+        assert z.min() < 0 < z.max()
+    assert cities.lat.min() <= field.barycenter_lat <= cities.lat.max()
+    assert cities.lon.min() <= field.barycenter_lon <= cities.lon.max()
+    json.dumps(asdict(field), allow_nan=False)
+    pd.testing.assert_frame_equal(cities, before_c)
+    pd.testing.assert_frame_equal(routes, before_r)
+
+
+def test_gravity_matrix_changes_with_params(live_network):
+    cities, routes, _ = live_network
+    # Сохранённая колонка не должна блокировать изменение lam из UI.
+    cities = cities.assign(effective_population_mln=999.)
+    base = calculate_gravity_matrix(cities, routes)
+    for kwargs in ({"gamma": 1.6}, {"lam": 1.2}, {"distance_knots_km": (100., 400., 700., 1800.)}):
+        assert not np.allclose(base, calculate_gravity_matrix(cities, routes, **kwargs))
+    expected = calculate_effective_population(cities)
+    np.testing.assert_allclose(list(base.attrs["effective_population_mln"].values()), expected)
+    excluded = calculate_gravity_matrix(cities, routes, exclude_existing_rw=True)
+    existing = routes.loc[routes.own_flights_weekly > 0]
+    assert len(existing) == 16 and excluded.attrs["excluded_existing_rw_pairs"] == 16
+    for row in routes.itertuples():
+        assert excluded.loc[row.origin_iata, row.dest_iata] == pytest.approx(
+            0 if row.own_flights_weekly > 0 else base.loc[row.origin_iata, row.dest_iata])
+    assert not np.allclose(base, excluded)
+
+
+@pytest.mark.parametrize("knots", [(300, 800, 800, 3000), (300, 900, 800, 3000),
+                                  (-1, 800, 1500, 3000), (0, 1, 2), (0, 1, 2, np.inf),
+                                  (True, 800, 1500, 3000), None])
+def test_gravity_rejects_invalid_range_knots(small_network, knots):
+    with pytest.raises(ValueError, match="distance_knots_km"):
+        calculate_gravity_matrix(small_network[0], distance_knots_km=knots)
+
+
+def test_gravity_custom_range_and_directional_rw_mask(small_network):
+    from src.scoring.city_scorer import _gravity_range_weight
+    np.testing.assert_allclose(_gravity_range_weight(np.array([0, 100, 200, 300, 500, 750, 1000]),
+                                                     (100, 300, 500, 1000)), [0, 0, .5, 1, 1, .5, 0])
+    cities, routes, _ = small_network
+    routes.loc[routes.origin_iata == "KUF", "own_flights_weekly"] = 0
+    masked = calculate_gravity_matrix(cities, routes, exclude_existing_rw=True)
+    assert masked.loc["AAA", "KUF"] == 0 < masked.loc["KUF", "AAA"]
+    routes.loc[0, "own_flights_weekly"] = np.nan
+    assert calculate_gravity_matrix(cities, routes, exclude_existing_rw=True).loc["AAA", "KUF"] > 0
+    no_own = routes.drop(columns="own_flights_weekly")
+    np.testing.assert_allclose(calculate_gravity_matrix(cities, no_own, exclude_existing_rw=True),
+                               calculate_gravity_matrix(cities, no_own))
+
+
+@pytest.mark.parametrize("own", [-1, np.inf, "invalid"])
+def test_invalid_rw_frequency(small_network, own):
+    cities, routes, _ = small_network
+    routes["own_flights_weekly"] = own
+    with pytest.raises(ValueError, match="own_flights_weekly"):
+        calculate_gravity_matrix(cities, routes, exclude_existing_rw=True)
+
+
+def test_field_barycenter_counts_unique_outgoing_white_spots(small_network):
+    cities, routes, scores = small_network
+    cities["airport_pax_mln"] = 0.
+    scores = [replace(s, total_score=100.) for s in scores]
+    field = compute_gravity_anomaly_field(cities, routes, scores, exclude_existing_rw=True, grid_w=5, grid_h=4)
+    # Белые пятна только AAA→BBB и BBB→AAA; масса .6*(1+.1*число направлений).
+    weights = np.array([.66, .6, .66])
+    assert field.barycenter_lon == pytest.approx(np.average(cities.lon, weights=weights))
+    # Пропуск частоты НЕ является нулём и не получает бонус белого пятна.
+    routes.loc[(routes.origin_iata == "AAA") & (routes.dest_iata == "BBB"), "own_flights_weekly"] = np.nan
+    field = compute_gravity_anomaly_field(cities, routes, scores, exclude_existing_rw=True, grid_w=5, grid_h=4)
+    assert field.barycenter_lon == pytest.approx(np.average(cities.lon, weights=[.6, .6, .66]))
+
+
+def test_field_live_scores_lambda_supply_and_order(live_network):
+    cities, routes, scores = live_network
+    kwargs = dict(grid_w=13, grid_h=9, mode="anomaly")
+    base = compute_gravity_anomaly_field(cities, routes, scores, **kwargs)
+    shuffled = compute_gravity_anomaly_field(cities.iloc[::-1], routes.iloc[::-1], scores[::-1], **kwargs)
+    np.testing.assert_allclose(base.z_values, shuffled.z_values, atol=1e-10)
+    changed_scores = [replace(s, total_score=100 if s.iata == "KUF" else 0) for s in scores]
+    for changes in ({"scored_cities": changed_scores}, {"lam": 1.5}, {"gamma": 2.5},
+                    {"radius_km": 500.}, {"exclude_existing_rw": True},
+                    {"routes_df": routes.assign(competitor_flights_weekly=np.where(routes.origin_iata == "KUF", 100., 0.))}):
+        inputs = dict(cities_df=cities, routes_df=routes, scored_cities=scores, **kwargs)
+        inputs.update(changes)
+        assert not np.allclose(base.z_values, compute_gravity_anomaly_field(**inputs).z_values)
+
+
+@pytest.mark.parametrize("kwargs", [{"mode": "bad"}, {"grid_w": 1}, {"grid_h": 3.5},
+                                    {"grid_h": True}, {"gamma": 0}, {"lam": -1},
+                                    {"radius_km": np.inf}, {"exclude_existing_rw": "yes"}])
+def test_field_rejects_invalid_parameters(small_network, kwargs):
+    with pytest.raises(ValueError):
+        compute_gravity_anomaly_field(*small_network, **kwargs)
+
+
+@pytest.mark.parametrize("problem", ["missing", "duplicate", "invalid_score"])
+def test_field_requires_complete_unique_scores(small_network, problem):
+    cities, routes, scores = small_network
+    if problem == "missing":
+        scores = scores[:-1]
+    elif problem == "duplicate":
+        scores = scores + scores[:1]
+    else:
+        scores[0] = replace(scores[0], total_score=np.nan)
+    with pytest.raises(ValueError):
+        compute_gravity_anomaly_field(cities, routes, scores)
+
+
+def test_network_graph_metrics_improvement(live_network):
+    cities, routes, _ = live_network
+    # Десять НОВЫХ пар, а не подбор индексов под город-победитель.
+    proposed = [("KUF", "PEE"), ("GOJ", "UFA"), ("GOJ", "MRV"), ("UFA", "VOG"),
+                ("KUF", "CEK"), ("UFA", "OMS"), ("KZN", "CEK"), ("KUF", "MRV"),
+                ("KUF", "VOG"), ("CEK", "GSV")]
+    before_c, before_r = cities.copy(deep=True), routes.copy(deep=True)
+    baseline, expanded, nodes_b, nodes_p = calculate_network_graph_metrics(cities, routes, proposed)
+    assert baseline.active_routes_count == 8 and expanded.active_routes_count == 18
+    assert expanded.weighted_travel_time_h < baseline.weighted_travel_time_h
+    assert expanded.tarkhov_connectivity_idx > baseline.tarkhov_connectivity_idx
+    assert expanded.multimodal_access_idx > baseline.multimodal_access_idx
+    assert baseline.mode == "baseline_rw" and expanded.mode == "proposed_network"
+    for nodes in (nodes_b, nodes_p):
+        assert len(nodes) == 12 and {node.iata for node in nodes} == set(cities.iata)
+        assert all(0 <= node.weighted_degree_centrality <= 1 for node in nodes)
+    json.dumps([asdict(x) for x in (baseline, expanded, *nodes_b, *nodes_p)], allow_nan=False)
+    pd.testing.assert_frame_equal(cities, before_c)
+    pd.testing.assert_frame_equal(routes, before_r)
+    # Порядок городов и дубль A→B / B→A не меняют сетевые показатели.
+    other = calculate_network_graph_metrics(cities.iloc[::-1], routes.sample(frac=1, random_state=42),
+                                            proposed + [(b, a) for a, b in proposed])
+    for a, b in zip((baseline, expanded), other[:2]):
+        for name in asdict(a):
+            if name != "mode":
+                assert getattr(a, name) == pytest.approx(getattr(b, name))
+
+
+def test_network_shortest_paths_and_indices_by_hand(small_network):
+    cities, routes, _ = small_network
+    baseline, expanded, nodes_b, nodes_p = calculate_network_graph_metrics(cities, routes, [], beta=1.)
+    # AAA→BBB: baseline Москва 10ч, proposed через KUF 2+1.25+3=6.25ч.
+    assert nodes_b[0].city_weighted_time_h == pytest.approx((2*2 + 3*10) / 5)
+    assert nodes_p[0].city_weighted_time_h == pytest.approx((2*2 + 3*6.25) / 5)
+    assert expanded.weighted_travel_time_h == pytest.approx((1*4.55 + 2*2.75 + 3*(12.25/3)) / 6)
+    assert baseline.tarkhov_connectivity_idx == round((2/3) * (470/2250), 4)
+    assert expanded.tarkhov_connectivity_idx == round((2/3) * (470/500), 4)
+    # baseline AAA→BBB: поезд 8ч лучше Москвы; доезд .25+.5 добавляется после min.
+    assert nodes_b[0].city_multimodal_index == pytest.approx((2/2.75 + 3/8.75) / 2)
+    assert nodes_p[0].city_multimodal_index == pytest.approx((2/2.75 + 3/7.) / 2)
+    assert nodes_b[1].weighted_degree_centrality == pytest.approx(1.)
+    assert baseline.avg_degree_centrality == pytest.approx(2/3)
+    # При слишком долгой стыковке выбирается Москва, а не бесконечность/худший путь.
+    capped = calculate_network_graph_metrics(cities, routes, [], hub_transfer_h=20.)
+    assert capped[1].weighted_travel_time_h == pytest.approx(baseline.weighted_travel_time_h)
+
+
+def test_graph_no_edges_and_no_gravity_are_finite(small_network):
+    cities, routes, _ = small_network
+    routes["own_flights_weekly"] = 0.
+    cities["lat"], cities["lon"] = 50., 40.  # G == 0, деление на max(G) запрещено
+    baseline, expanded, nodes_b, _ = calculate_network_graph_metrics(cities, routes, [("AAA", "BBB")])
+    assert baseline.active_routes_count == baseline.tarkhov_connectivity_idx == 0
+    assert baseline.avg_degree_centrality == 0
+    assert all(n.weighted_degree_centrality == 0 for n in nodes_b)
+    assert expanded.active_routes_count == 1
+    assert expanded.weighted_travel_time_h < baseline.weighted_travel_time_h
+
+
+@pytest.mark.parametrize("pairs", [[("AAA", "AAA")], [("AAA", "XXX")], ["AAA-BBB"]])
+def test_graph_rejects_invalid_proposals(small_network, pairs):
+    with pytest.raises(ValueError, match="proposed_pair_codes"):
+        calculate_network_graph_metrics(*small_network[:2], pairs)
+
+
+def test_graph_rejects_incomplete_pair_evidence(small_network):
+    cities, routes, _ = small_network
+    routes = routes.loc[~((routes.origin_iata.isin(["AAA", "BBB"])) & (routes.dest_iata.isin(["AAA", "BBB"])))]
+    with pytest.raises(ValueError, match="всех уникальных пар"):
+        calculate_network_graph_metrics(cities, routes, [])
+
+
+def test_graph_averages_directional_frequencies_and_keeps_existing_weight(small_network):
+    cities, routes, _ = small_network
+    cities["lat"], cities["lon"] = 50., 40.  # G == 0, можно проверить веса вручную
+    routes.loc[(routes.origin_iata == "KUF") & (routes.dest_iata == "AAA"), "own_flights_weekly"] = 4.
+    baseline, expanded, nodes_b, nodes_p = calculate_network_graph_metrics(
+        cities, routes, [("AAA", "KUF"), ("KUF", "AAA")])
+    # Средняя частота AAA—KUF = (2+4)/2 = 3, KUF—BBB = 2.
+    assert baseline.active_routes_count == expanded.active_routes_count == 2
+    for nodes in (nodes_b, nodes_p):
+        np.testing.assert_allclose([n.weighted_degree_centrality for n in nodes], [.6, 1., .4])
+
+
+@pytest.mark.parametrize("column,value", [("rail_travel_hours", np.nan), ("air_door_to_door_h", 0.),
+                                         ("access_time_origin_h", -1.), ("own_flights_weekly", np.inf)])
+def test_graph_rejects_invalid_route_evidence(small_network, column, value):
+    cities, routes, _ = small_network
+    routes.loc[0, column] = value
+    with pytest.raises(ValueError, match=column):
+        calculate_network_graph_metrics(cities, routes, [])
+
+
+def test_complete_aviation_graph_does_not_clip_planar_normalization(live_network):
+    cities, routes, _ = live_network
+    all_pairs = [(a, b) for i, a in enumerate(cities.iata) for b in cities.iata.iloc[i+1:]]
+    expanded = calculate_network_graph_metrics(cities, routes, all_pairs)[1]
+    assert expanded.active_routes_count == 66
+    assert expanded.tarkhov_connectivity_idx == pytest.approx(66 / 30)
+
+
+def test_legacy_population_cannot_silently_ignore_lambda(small_network):
+    cities = small_network[0].assign(effective_population_mln=[1., 2., 3.]).drop(
+        columns=["population_city_mln", "agglomeration_members"])
+    assert np.isfinite(calculate_gravity_matrix(cities)).all().all()
+    with pytest.raises(ValueError, match="lam"):
+        calculate_gravity_matrix(cities, lam=.9)
+
+
+@pytest.mark.parametrize("mode", ["potential", "anomaly"])
+def test_field_zero_mass_stays_finite(small_network, mode):
+    cities, routes, scores = small_network
+    cities["population_city_mln"] = 0.
+    scores = [replace(s, total_score=0.) for s in scores]
+    field = compute_gravity_anomaly_field(cities, routes, scores, mode=mode, grid_w=4, grid_h=3)
+    assert np.isfinite(field.z_values).all()
+    assert field.barycenter_lat == pytest.approx(cities.lat.mean())
+    assert field.barycenter_lon == pytest.approx(cities.lon.mean())
 
 
 @pytest.fixture

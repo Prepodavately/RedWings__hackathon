@@ -13,7 +13,10 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from src.schemas.contracts import CityScoreDTO, ScoringWeights
+from src.schemas.contracts import (
+    CityScoreDTO, ScoringWeights, GravityFieldGridDTO,
+    CityGraphNodeDTO, NetworkGraphMetricsDTO,
+)
 from src.scoring.normalizer import distance_sweet_spot_score, min_max_normalize
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -140,9 +143,25 @@ def calculate_effective_population(df: pd.DataFrame, lam: float = 0.45) -> pd.Se
     return result
 
 
-def _gravity_range_weight(distances: np.ndarray) -> np.ndarray:
-    """Сценарный фильтр: 0 до 300/от 3000, 1 на 800–1500, линейные склоны."""
-    return np.interp(distances, GRAVITY_DISTANCE_KNOTS_KM, [0.0, 1.0, 1.0, 0.0], left=0.0, right=0.0)
+def _gravity_range_weight(
+    distances: np.ndarray,
+    distance_knots_km: tuple[float, float, float, float] = GRAVITY_DISTANCE_KNOTS_KM,
+) -> np.ndarray:
+    """Сценарная трапеция дальности; четыре строго возрастающих узла, км.
+
+    Это параметры модели, а не сертифицированные ограничения самолёта.
+    За крайними узлами вес равен нулю, между внутренними — единице.
+    """
+    try:
+        raw_knots = tuple(distance_knots_km)
+    except TypeError as exc:
+        raise ValueError("distance_knots_km: нужны четыре возрастающих неотрицательных числа") from exc
+    if len(raw_knots) != 4:
+        raise ValueError("distance_knots_km: нужны четыре узла")
+    knots = np.array([_finite_parameter(value, "distance_knots_km") for value in raw_knots])
+    if not (np.diff(knots) > 0).all():
+        raise ValueError("distance_knots_km: узлы должны строго возрастать")
+    return np.interp(distances, knots, [0.0, 1.0, 1.0, 0.0], left=0.0, right=0.0)
 
 
 def _airport_distance_matrix(cities: pd.DataFrame) -> np.ndarray:
@@ -159,6 +178,9 @@ def _airport_distance_matrix(cities: pd.DataFrame) -> np.ndarray:
 
 def calculate_gravity_matrix(
     cities_df: pd.DataFrame, routes_df: pd.DataFrame | None = None, gamma: float = 1.15,
+    lam: float = 0.45,
+    distance_knots_km: tuple[float, float, float, float] = GRAVITY_DISTANCE_KNOTS_KM,
+    exclude_existing_rw: bool = False,
 ) -> pd.DataFrame:
     """G_ij = P_eff_i*P_eff_j*sqrt(q_i*q_j)*W(d)/(d**gamma*(1+F_ij)).
 
@@ -168,32 +190,50 @@ def calculate_gravity_matrix(
     F_ij направленный: обратное направление не копируется автоматически.
     Возвращается квадратная матрица с нулевой диагональю. Сумма строки —
     gravity_hub_potential (в attrs и через .sum(axis=1)), не пассажиропоток.
-    Входы не меняются. Если P_eff не передано, рассчитывается при lam=0.45.
+    P_eff пересчитывается из ядра и спутников при каждом вызове с данным lam:
+    ранее сохранённая effective_population_mln в полной витрине игнорируется.
+    Для совместимости старый вход только с P_eff допускается при lam=0.45;
+    менять lam без исходного населения нельзя. Источник отмечен в attrs.
+    distance_knots_km задаёт трапецию [0, 1, 1, 0] для выбранного типа ВС.
+    exclude_existing_rw обнуляет направленные ячейки с own_flights_weekly > 0,
+    если колонка есть. Неизвестные частоты RW не исключают пару и отмечаются
+    в attrs; нулевой вес не является доказательством отсутствия спроса.
+    Входные таблицы не меняются.
     """
     gamma = _finite_parameter(gamma, "gamma", positive=True)
+    lam = _finite_parameter(lam, "lam")
+    if not isinstance(exclude_existing_rw, (bool, np.bool_)):
+        raise ValueError("exclude_existing_rw должен быть bool")
     cities = _identified_cities(cities_df)
     for column, low, high in (("lat", -90, 90), ("lon", -180, 180)):
         _number_column(cities, column, low, high)
     _number_column(cities, "avg_wage_rub_region", 0)
     if (cities["avg_wage_rub_region"] <= 0).any():
         raise ValueError("avg_wage_rub_region должен быть положительным")
-    population_source = "provided_effective_population_mln"
-    if "effective_population_mln" not in cities:
-        cities["effective_population_mln"] = calculate_effective_population(cities)
-        population_source = "derived_lam_0.45"
+    catchment_columns = {"population_city_mln", "agglomeration_members"}
+    if catchment_columns & set(cities.columns) or "effective_population_mln" not in cities:
+        cities["effective_population_mln"] = calculate_effective_population(cities, lam=lam)
+        population_source = "derived_from_city_and_satellites"
+    else:
+        if lam != 0.45:
+            raise ValueError("Для изменения lam нужны population_city_mln и agglomeration_members")
+        population_source = "provided_effective_population_mln_legacy"
     _number_column(cities, "effective_population_mln", 0)
     codes = cities["iata"].tolist()
     index = {code: i for i, code in enumerate(codes)}
     n = len(codes)
     distances = _airport_distance_matrix(cities)
-    range_weight = _gravity_range_weight(distances)
+    range_weight = _gravity_range_weight(distances, distance_knots_km)
     frequencies = np.zeros((n, n), dtype=float)
     observed = np.zeros((n, n), dtype=bool)
+    own_frequencies = np.zeros((n, n), dtype=float)
+    own_observed = np.zeros((n, n), dtype=bool)
     if routes_df is not None and not routes_df.empty:
         required = {"origin_iata", "dest_iata", "competitor_flights_weekly"}
         if not required <= set(routes_df.columns):
             raise ValueError(f"routes_df: нет колонок {sorted(required - set(routes_df.columns))}")
-        routes = routes_df.loc[:, sorted(required)].copy(deep=True)
+        selected = required | ({"own_flights_weekly"} if "own_flights_weekly" in routes_df else set())
+        routes = routes_df.loc[:, sorted(selected)].copy(deep=True)
         for column in ("origin_iata", "dest_iata"):
             if not routes[column].map(lambda value: isinstance(value, str)).all():
                 raise ValueError(f"{column}: нужны строковые IATA-коды")
@@ -211,13 +251,25 @@ def calculate_gravity_matrix(
         for origin, dest, value, known in zip(routes["origin_iata"], routes["dest_iata"], values, freq.notna()):
             frequencies[index[origin], index[dest]] = value
             observed[index[origin], index[dest]] = bool(known)
+        if exclude_existing_rw and "own_flights_weekly" in routes:
+            try:
+                own = pd.to_numeric(routes["own_flights_weekly"], errors="raise").astype(float)
+            except (ValueError, TypeError) as exc:
+                raise ValueError("own_flights_weekly: нужны числа или NaN") from exc
+            own_values = own.fillna(0).to_numpy()
+            if not np.isfinite(own_values).all() or (own_values < 0).any():
+                raise ValueError("own_flights_weekly: частоты должны быть конечными и неотрицательными")
+            for origin, dest, value, known in zip(routes["origin_iata"], routes["dest_iata"], own_values, own.notna()):
+                own_frequencies[index[origin], index[dest]] = value
+                own_observed[index[origin], index[dest]] = bool(known)
     population = cities["effective_population_mln"].to_numpy()
     wages = cities["avg_wage_rub_region"].to_numpy()
     # Масштабирование перед средним исключает переполнение суммы больших зарплат.
     wages_scaled = wages / wages.max()
     purchasing_power = wages_scaled / wages_scaled.mean()
     gravity = np.zeros((n, n), dtype=float)
-    active = range_weight > 0  # также исключает диагональ и совпадающие координаты
+    excluded_rw = (own_frequencies > 0) & ~np.eye(n, dtype=bool)
+    active = (range_weight > 0) & (distances > 0) & ~excluded_rw
     try:
         with np.errstate(over="raise", invalid="raise"):
             mass = (population[:, None] * population[None, :]
@@ -234,11 +286,17 @@ def calculate_gravity_matrix(
                           columns=pd.Index(codes, name="dest_iata"))
     off_diagonal = ~np.eye(n, dtype=bool)
     result.attrs.update({
-        "model": "scenario_gravity_index_not_passenger_forecast", "gamma": gamma,
+        "model": "scenario_gravity_index_not_passenger_forecast", "gamma": gamma, "lam": lam,
         "population_unit": "million_people", "population_source": population_source,
+        "effective_population_mln": dict(zip(codes, population.tolist())),
         "purchasing_power_method": "regional_wage / candidate_mean_regional_wage",
         "purchasing_power_index": dict(zip(codes, purchasing_power.tolist())),
-        "distance_method": "airport_haversine_R_6371_km", "range_knots_km": list(GRAVITY_DISTANCE_KNOTS_KM),
+        "distance_method": "airport_haversine_R_6371_km", "range_knots_km": [float(x) for x in distance_knots_km],
+        "exclude_existing_rw": bool(exclude_existing_rw),
+        "excluded_existing_rw_pairs": int(excluded_rw.sum()),
+        "rw_exclusion_method": "directional_own_flights_weekly_gt_zero; missing_or_NaN_not_excluded",
+        "rw_frequency_observed": own_observed.tolist() if exclude_existing_rw else None,
+        "missing_rw_frequency_pairs": int((~own_observed & off_diagonal).sum()) if exclude_existing_rw else None,
         "competition_method": "directional_1_over_1_plus_F; missing_or_NaN_F_is_zero",
         "missing_competition_pairs": int((~observed & off_diagonal).sum()),
         "competition_observed": observed.tolist(), "competitor_flights_weekly": frequencies.tolist(),
@@ -246,6 +304,270 @@ def calculate_gravity_matrix(
         "gravity_hub_potential": result.sum(axis=1).to_dict(),
     })
     return result
+
+
+def _candidate_routes(
+    cities: pd.DataFrame, routes_df: pd.DataFrame, required: set[str],
+) -> pd.DataFrame:
+    """Копия направленных маршрутов кандидатов, без повторов и петель."""
+    columns = required | {"origin_iata", "dest_iata"}
+    if not columns <= set(routes_df.columns):
+        raise ValueError(f"routes_df: нет колонок {sorted(columns - set(routes_df.columns))}")
+    routes = routes_df.loc[:, sorted(columns)].copy(deep=True)
+    for column in ("origin_iata", "dest_iata"):
+        if not routes[column].map(lambda value: isinstance(value, str)).all():
+            raise ValueError(f"{column}: нужны строковые IATA-коды")
+        routes[column] = routes[column].str.strip().str.upper()
+        if not routes[column].str.fullmatch(r"[A-Z]{3}").all():
+            raise ValueError(f"{column}: неверный IATA-код")
+    codes = set(cities["iata"])
+    routes = routes.loc[routes.origin_iata.isin(codes) & routes.dest_iata.isin(codes)].copy()
+    if (routes.origin_iata == routes.dest_iata).any():
+        raise ValueError("routes_df: маршрут должен соединять разные города")
+    if routes.duplicated(["origin_iata", "dest_iata"]).any():
+        raise ValueError("routes_df: повтор пары А→Б; сначала агрегируйте частоты")
+    return routes
+
+
+def compute_gravity_anomaly_field(
+    cities_df: pd.DataFrame,
+    routes_df: pd.DataFrame,
+    scored_cities: list[CityScoreDTO],
+    gamma: float = 1.6,
+    lam: float = 0.45,
+    radius_km: float = 1250.0,
+    mode: Literal["potential", "anomaly"] = "potential",
+    exclude_existing_rw: bool = False,
+    grid_w: int = 160,
+    grid_h: int = 110,
+) -> GravityFieldGridDTO:
+    """Сценарная линза по ТЗ: сглаженные массы городов, НЕ прогноз спроса.
+
+    freq_i — число уникальных исходящих направлений, не сумма частот.
+    При exclude_existing_rw учитываются только явно наблюдённые нулевые
+    частоты ОБОИХ видов (RW и конкурентов). Неизвестные частоты не являются
+    белыми пятнами; в поле предложения NaN принимается за 0 по сценарию.
+    Для anomaly применяется z-score обоих полей, затем центрирование их
+    разности и деление на max(abs(D)). Знак относительный, не измеренный
+    дефицит кресел. При нулевой массе барицентр — среднее координат городов.
+    Все коэффициенты и границы карты взяты из ТЗ; входы не изменяются.
+    """
+    gamma = _finite_parameter(gamma, "gamma", positive=True)
+    lam = _finite_parameter(lam, "lam")
+    radius_km = _finite_parameter(radius_km, "radius_km", positive=True)
+    if mode not in ("potential", "anomaly"):
+        raise ValueError("mode должен быть potential или anomaly")
+    if not isinstance(exclude_existing_rw, (bool, np.bool_)):
+        raise ValueError("exclude_existing_rw должен быть bool")
+    for name, size in (("grid_w", grid_w), ("grid_h", grid_h)):
+        if isinstance(size, (bool, np.bool_)) or not isinstance(size, (int, np.integer)) or size < 2:
+            raise ValueError(f"{name}: нужно целое число >= 2")
+    cities = _identified_cities(cities_df)
+    for column, low, high in (("lat", -90, 90), ("lon", -180, 180)):
+        _number_column(cities, column, low, high)
+    _number_column(cities, "airport_pax_mln", 0)
+    population = calculate_effective_population(cities, lam=lam).to_numpy()
+    scores = {}
+    for row in scored_cities:
+        if not isinstance(row, CityScoreDTO) or not isinstance(row.iata, str):
+            raise ValueError("scored_cities: ожидается список CityScoreDTO")
+        code = row.iata.strip().upper()
+        if code in scores:
+            raise ValueError("scored_cities: повтор IATA")
+        scores[code] = _finite_parameter(row.total_score, "total_score")
+        if scores[code] > 100:
+            raise ValueError("total_score должен быть в [0, 100]")
+    codes = cities.iata.tolist()
+    if set(scores) != set(codes):
+        raise ValueError("scored_cities должны содержать ровно всех кандидатов cities_df")
+    routes = _candidate_routes(cities, routes_df, {"own_flights_weekly", "competitor_flights_weekly"})
+    for column in ("own_flights_weekly", "competitor_flights_weekly"):
+        try:
+            routes[column] = pd.to_numeric(routes[column], errors="raise").astype(float)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"{column}: нужны числа или NaN") from exc
+        known = routes[column].dropna()
+        if not np.isfinite(known).all() or (known < 0).any():
+            raise ValueError(f"{column}: нужны конечные неотрицательные частоты")
+    available = routes
+    if exclude_existing_rw:
+        available = routes.loc[(routes.own_flights_weekly == 0) & (routes.competitor_flights_weekly == 0)]
+    counts = available.groupby("origin_iata").size().reindex(codes, fill_value=0).to_numpy()
+    supply_counts = (routes.assign(supply=routes.own_flights_weekly.fillna(0)
+                                  + routes.competitor_flights_weekly.fillna(0))
+                     .groupby("origin_iata")["supply"].sum().reindex(codes, fill_value=0).to_numpy())
+    with np.errstate(over="ignore", invalid="ignore"):
+        masses = (.60 * (np.array([scores[c] for c in codes]) / 100) ** 1.35
+                  + .40 * (population * cities.airport_pax_mln.to_numpy()) ** .38) * (1 + .10 * counts)
+        supply_masses = (1 + supply_counts) ** .45
+    if not np.isfinite(masses).all() or not np.isfinite(supply_masses).all():
+        raise ValueError("Переполнение массы поля; проверьте единицы входных данных")
+    lons, lats = np.linspace(26., 82., grid_w), np.linspace(40., 64., grid_h)
+    lon_grid, lat_grid = np.meshgrid(lons, lats)
+    # Операции numpy вместо Python ** сохраняют обработку очень больших радиусов.
+    with np.errstate(over="ignore"):
+        r1_sq = max(40000., float(np.square(.44 * radius_km)))
+        r2_sq = max(90000., float(np.square(.85 * radius_km)))
+    potential, supply = np.zeros_like(lon_grid), np.zeros_like(lon_grid)
+    for i, city in enumerate(cities.itertuples(index=False)):
+        d_sq = ((lat_grid - city.lat) * 111.) ** 2 + (
+            (lon_grid - city.lon) * 111. * np.cos(np.radians(city.lat))) ** 2
+        with np.errstate(over="ignore", under="ignore"):
+            kernel = 1.55 / (1 + d_sq / r1_sq) ** (gamma / 2) + .85 / (1 + d_sq / r2_sq)
+        potential += masses[i] * kernel
+        if mode == "anomaly":
+            supply += supply_masses[i] * kernel
+    if not np.isfinite(potential).all() or not np.isfinite(supply).all():
+        raise ValueError("Переполнение поля; проверьте единицы входных данных")
+    if mode == "potential":
+        z = -100 + 200 * (potential - potential.min()) / max(1e-9, float(np.ptp(potential)))
+    else:
+        def zscore(values: np.ndarray) -> np.ndarray:
+            # Сначала масштабируем, чтобы сумма квадратов не переполнялась.
+            scaled = values / max(1., float(np.abs(values).max()))
+            return (scaled - scaled.mean()) / max(1e-9, float(scaled.std()))
+        delta = zscore(potential) - .55 * zscore(supply)
+        delta -= delta.mean()
+        z = 100 * delta / max(1e-9, float(np.abs(delta).max()))
+    scaled_masses = masses / masses.max() if masses.max() > 0 else np.ones(len(cities))
+    weights = scaled_masses / scaled_masses.sum()
+    return GravityFieldGridDTO(
+        lons=tuple(float(x) for x in lons), lats=tuple(float(y) for y in lats),
+        z_values=tuple(tuple(float(value) for value in row) for row in np.clip(z, -100, 100)),
+        barycenter_lat=float(weights @ cities.lat.to_numpy()),
+        barycenter_lon=float(weights @ cities.lon.to_numpy()), mode=mode,
+    )
+
+
+def calculate_network_graph_metrics(
+    cities_df: pd.DataFrame,
+    routes_df: pd.DataFrame,
+    proposed_pair_codes: list[tuple[str, str]],
+    lam: float = 0.45,
+    beta: float = 1.2,
+    hub_transfer_h: float = 1.25,
+) -> tuple[NetworkGraphMetricsDTO, NetworkGraphMetricsDTO, list[CityGraphNodeDTO], list[CityGraphNodeDTO]]:
+    """Сценарные граф-индексы по ТЗ, не расписание и не прогноз пассажиров.
+
+    Ненаправленная пара существует при RW > 0 хотя бы в одном направлении.
+    Частоты, G и прочие числовые характеристики усредняются между имеющимися
+    направлениями (не суммируются); исходные направленные данные не меняются.
+    Нужны данные всех пар, хотя бы одна строка на пару, и >=3 города.
+    baseline использует прямой рейс RW или Москву, без поиска пересадок RW.
+    proposed разрешает пересадки только в KUF/UFA/SVX. Флойд считает время
+    (сумма времён рёбер + hub_transfer_h за каждую стыковку) и расстояние независимо;
+    для непрямых пар результаты ограничены альтернативой через Москву.
+    Терминальные 90 минут уже включены в каждое ребро по ТЗ; это упрощение,
+    не расчёт MCT. Для MAI доезд прибавляется после выбора min(авиа, ЖД).
+    e/(3v-6) — заданная нормировка: авиаграф не обязан быть планарным,
+    поэтому индекс связности НЕ ограничивается единицей и не обрезается.
+    Добавление рёбер не гарантирует строгого роста средней центральности.
+    """
+    lam = _finite_parameter(lam, "lam")
+    beta = _finite_parameter(beta, "beta", positive=True)
+    hub_transfer_h = _finite_parameter(hub_transfer_h, "hub_transfer_h")
+    cities = _identified_cities(cities_df)
+    n = len(cities)
+    if n < 3:
+        raise ValueError("Для графовых индексов нужны минимум три города")
+    if "city_name" not in cities or not cities.city_name.map(lambda value: isinstance(value, str)).all():
+        raise ValueError("city_name: нужны названия городов")
+    _number_column(cities, "dist_to_mow_km", 0)
+    population = calculate_effective_population(cities, lam=lam).to_numpy()
+    if (population <= 0).any():
+        raise ValueError("Для графовых индексов эффективное население должно быть положительным")
+    numeric = {"own_flights_weekly", "competitor_flights_weekly", "distance_km",
+               "air_door_to_door_h", "moscow_via_time_h", "rail_travel_hours",
+               "access_time_origin_h", "access_time_dest_h"}
+    routes = _candidate_routes(cities, routes_df, numeric)
+    for column in numeric:
+        _number_column(routes, column, 0)
+    for column in ("distance_km", "air_door_to_door_h", "moscow_via_time_h", "rail_travel_hours"):
+        if (routes[column] <= 0).any():
+            raise ValueError(f"{column}: нужно положительное значение")
+    codes = cities.iata.tolist()
+    indices = {code: i for i, code in enumerate(codes)}
+    proposed = set()
+    for pair in proposed_pair_codes:
+        if not isinstance(pair, (tuple, list)) or len(pair) != 2 or not all(isinstance(x, str) for x in pair):
+            raise ValueError("proposed_pair_codes: нужны пары IATA")
+        origin, dest = (x.strip().upper() for x in pair)
+        if origin not in indices or dest not in indices or origin == dest:
+            raise ValueError(f"proposed_pair_codes: неизвестная пара или петля {pair!r}")
+        proposed.add(tuple(sorted((indices[origin], indices[dest]))))
+    # Агрегация суммарного доезда до симметризации сохраняет смысл origin/dest.
+    routes["access_total_h"] = routes.access_time_origin_h + routes.access_time_dest_h
+    routes["pair"] = [tuple(sorted((indices[a], indices[b])))
+                      for a, b in zip(routes.origin_iata, routes.dest_iata)]
+    pairs = routes.groupby("pair")[sorted(numeric | {"access_total_h"})].mean()
+    if len(pairs) != n * (n - 1) // 2:
+        raise ValueError("routes_df: нужны характеристики всех уникальных пар кандидатов")
+    matrices = {column: np.zeros((n, n)) for column in numeric | {"access_total_h"}}
+    for (i, j), row in pairs.iterrows():
+        for column, matrix in matrices.items():
+            matrix[i, j] = matrix[j, i] = row[column]
+    gravity = calculate_gravity_matrix(cities, routes, lam=lam).to_numpy()
+    gravity = (gravity + gravity.T) / 2
+    attraction = gravity / gravity.max() if gravity.max() > 0 else np.zeros_like(gravity)
+    existing = matrices["own_flights_weekly"] > 0
+    expanded = existing.copy()
+    for i, j in proposed:
+        expanded[i, j] = expanded[j, i] = True
+    off_diagonal = ~np.eye(n, dtype=bool)
+    upper = np.triu_indices(n, 1)
+    mow = cities.dist_to_mow_km.to_numpy()
+    via_mow_distance = mow[:, None] + mow[None, :]
+    transfer_nodes = [i for i, code in enumerate(codes) if code in {"KUF", "UFA", "SVX"}]
+
+    def evaluate(active: np.ndarray, mode: Literal["baseline_rw", "proposed_network"]):
+        frequency = matrices["own_flights_weekly"].copy()
+        frequency[active & ~existing] = 5.
+        raw_degree = (frequency * (1 + attraction) * active).sum(axis=1)
+        centrality = raw_degree / raw_degree.max() if raw_degree.max() else np.zeros(n)
+        times = np.where(active, matrices["air_door_to_door_h"], matrices["moscow_via_time_h"])
+        distances = np.where(active, matrices["distance_km"], via_mow_distance)
+        if mode == "proposed_network":
+            graph_t = np.where(active, matrices["air_door_to_door_h"], np.inf)
+            graph_d = np.where(active, matrices["distance_km"], np.inf)
+            np.fill_diagonal(graph_t, 0)
+            np.fill_diagonal(graph_d, 0)
+            for k in transfer_nodes:
+                graph_t = np.minimum(graph_t, graph_t[:, k, None] + graph_t[None, k, :] + hub_transfer_h)
+                graph_d = np.minimum(graph_d, graph_d[:, k, None] + graph_d[None, k, :])
+            times = np.where(active, times, np.minimum(graph_t, times))
+            distances = np.where(active, distances, np.minimum(graph_d, distances))
+        np.fill_diagonal(times, 0)
+        np.fill_diagonal(distances, 0)
+        population_weights = population / population.max()
+        other_population = (off_diagonal * population_weights[None, :]).sum(axis=1)
+        city_times = (times @ population_weights) / other_population
+        door = matrices["access_total_h"] + np.minimum(times, matrices["rail_travel_hours"])
+        np.fill_diagonal(door, 1.)  # диагональ исключается, деление на ноль не требуется
+        with np.errstate(over="ignore", under="ignore"):
+            access = population[None, :] * np.exp(-beta * np.log(door))
+        np.fill_diagonal(access, 0)
+        mai = access.sum(axis=1) / (n - 1)
+        e = int(active[upper].sum())
+        denominator = float(distances[upper].sum())
+        if denominator <= 0 or not np.isfinite(mai).all():
+            raise ValueError("Нельзя вычислить конечные графовые индексы для этих данных")
+        straightness = float(matrices["distance_km"][upper].sum()) / denominator
+        metrics = NetworkGraphMetricsDTO(
+            mode=mode, weighted_travel_time_h=float(np.average(city_times, weights=population_weights)),
+            tarkhov_connectivity_idx=round(e / (3 * n - 6) * straightness, 4),
+            multimodal_access_idx=float(mai.mean()), active_routes_count=e,
+            avg_degree_centrality=float(centrality.mean()),
+        )
+        nodes = [CityGraphNodeDTO(
+            iata=code, city_name=str(cities.iloc[i].city_name),
+            weighted_degree_centrality=float(centrality[i]),
+            city_weighted_time_h=float(city_times[i]), city_multimodal_index=float(mai[i]),
+        ) for i, code in enumerate(codes)]
+        return metrics, nodes
+
+    baseline_metrics, baseline_nodes = evaluate(existing, "baseline_rw")
+    proposed_metrics, proposed_nodes = evaluate(expanded, "proposed_network")
+    return baseline_metrics, proposed_metrics, baseline_nodes, proposed_nodes
 
 
 def calculate_scissor_hub_index(
