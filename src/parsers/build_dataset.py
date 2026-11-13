@@ -123,6 +123,24 @@ RAIL_MIN_MINUTES = {
 }
 RAIL_WEAK_THRESHOLD_H = 12  # ТЗ: rail_travel_hours >= 12 → rail_weak_competitor = True
 
+# ---- ДОПУЩЕНИЯ ДОСТУПНОСТИ (ТЗ Dev 1, шаг 2; модель, не измерения) ----
+TERMINAL_OVERHEAD_H = 1.5      # регистрация, досмотр, выдача багажа на прямом рейсе
+MOSCOW_VIA_SPEED_KMH = 800.0   # средняя скорость двух перелётов через Москву
+MOSCOW_VIA_OVERHEAD_H = 3.5    # 2 ч стыковка в Москве + 1,5 ч терминалы
+CORE_ACCESS_H = 0.45           # доезд до аэропорта из основного города
+# Время доезда из спутников — те же сценарные значения, что у Dev 2
+# (src/scoring/city_scorer.py: AIRPORT_ACCESS_HOURS, DEFAULT_ACCESS_HOURS), не изохроны.
+SATELLITE_ACCESS_H = {
+    "KUF": {"тольятти": 0.75},
+    "GOJ": {"дзержинск": 0.55},
+    "GSV": {"энгельс": 0.70},
+    "VOG": {"волжский": 0.60},
+    "MRV": {"пятигорск": 0.35, "ессентуки": 0.55, "кисловодск": 0.75},
+}
+SATELLITE_DEFAULT_ACCESS_H = 0.65
+# ТЗ: own_flights_weekly >= 4 → existing_core, 1..3 → existing_thin
+RW_CORE_MIN_WEEKLY = 4
+
 
 def build_cities_features() -> pd.DataFrame:
     return load_rosstat_and_rosaviatsia()
@@ -159,6 +177,38 @@ def _pair_competitor_info() -> dict[tuple[str, str], dict]:
     return info
 
 
+def _access_time_h(iata: str, population_city_mln: float, members: str) -> float:
+    """
+    Среднее время доезда до аэропорта, ч, взвешенное по населению:
+    (P_город × CORE_ACCESS_H + Σ P_спутник × t_спутник) / (P_город + Σ P_спутник).
+    agglomeration_members: «Название (123,456); …» — численность спутника в людях.
+    """
+    total_pop = population_city_mln * 1e6
+    weighted = total_pop * CORE_ACCESS_H
+    overrides = SATELLITE_ACCESS_H.get(iata, {})
+    for member in (members or "").split(";"):
+        member = member.strip()
+        if not member:
+            continue
+        name, _, pop_txt = member.rpartition("(")
+        pop = int("".join(ch for ch in pop_txt if ch.isdigit()))
+        key = " ".join(name.casefold().replace("ё", "е").split())
+        hits = [h for token, h in overrides.items() if token in key]
+        t = hits[0] if hits else SATELLITE_DEFAULT_ACCESS_H
+        total_pop += pop
+        weighted += pop * t
+    return round(weighted / total_pop, 2)
+
+
+def _rw_network_status(own_weekly: int, competitor_weekly: int) -> str:
+    """ТЗ Dev 1, шаг 2: статус пары в сети Red Wings."""
+    if own_weekly >= RW_CORE_MIN_WEEKLY:
+        return "existing_core"
+    if own_weekly >= 1:
+        return "existing_thin"
+    return "new_blue_ocean" if competitor_weekly == 0 else "new_head_to_head"
+
+
 def _launch_quarter(own_weekly: int, competitor_weekly: int) -> str:
     """Предложение по срокам запуска (правило, не прогноз):
     уже летает Red Wings → Q3 2026; есть конкуренты → Q2 2027; конкурентов нет → Q1 2028."""
@@ -187,6 +237,11 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
     rail_fit = np.polyfit([p[0] for p in fit_pts], [p[1] for p in fit_pts], 1)
     all_fares = [f for v in info.values() for f in v["fares"]]
     fare_fallback = float(pd.Series(all_fares).median()) if all_fares else float("nan")
+
+    access_h = {
+        c.iata: _access_time_h(c.iata, c.population_city_mln, c.agglomeration_members)
+        for c in cities.itertuples(index=False)
+    }
 
     rows: list[dict] = []
     for a in cities.itertuples(index=False):
@@ -306,6 +361,12 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
                 "rail_source": rail_src,
                 "rail_text": rail_txt,
                 "launch_quarter": _launch_quarter(own_weekly or 0, comp_weekly or 0),
+                "air_door_to_door_h": round((flight_min + TERMINAL_OVERHEAD_H * 60) / 60.0, 2),
+                "moscow_via_time_h": round(
+                    (a.dist_to_mow_km + b.dist_to_mow_km) / MOSCOW_VIA_SPEED_KMH + MOSCOW_VIA_OVERHEAD_H, 2
+                ),
+                "access_time_origin_h": access_h[a.iata],
+                "access_time_dest_h": access_h[b.iata],
                 "moscow_detour_ratio": round(detour, 2),
                 "flight_cost_rub": int(flight_cost_rub),
                 "belf_no_subsidy_pct": belf_no_subsidy_pct,
@@ -328,6 +389,19 @@ def build_routes(cities: pd.DataFrame) -> pd.DataFrame:
         else:
             warnings.warn(f"{c}: есть неизмеренные пары, оставлены пустыми (Int64)", stacklevel=2)
     df["subsidy_eligible"] = df["subsidy_eligible"].astype(bool)
+
+    # Статус — по паре O-D (обе стороны одинаково): берётся максимум рейсов из двух направлений.
+    # Пример: Саратов→Казань 1 рейс/нед, обратно 0 — пара не «белое пятно», а head-to-head.
+    pair_key = pd.Series(
+        ["-".join(sorted(k)) for k in zip(df["origin_iata"], df["dest_iata"])], index=df.index
+    )
+    own_max = df.groupby(pair_key)["own_flights_weekly"].transform("max")
+    comp_max = df.groupby(pair_key)["competitor_flights_weekly"].transform("max")
+    status_at = df.columns.get_loc("launch_quarter") + 1
+    df.insert(status_at, "rw_network_status", [
+        None if pd.isna(o) or pd.isna(c) else _rw_network_status(int(o), int(c))
+        for o, c in zip(own_max, comp_max)
+    ])
     return df
 
 
