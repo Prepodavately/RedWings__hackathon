@@ -296,3 +296,50 @@ def render_assumptions_audit(fin_input: FinModelInput, subsidy_retention_pct: fl
         st.markdown('Для калибровки нужны: ' + '; '.join(audit['calibration']['needed']) + '.')
         st.download_button('Скачать аудит и контрольные суммы · JSON', json.dumps(audit, ensure_ascii=False, indent=2),
                            'red_wings_assumptions_audit.json', 'application/json', key='download_assumptions')
+
+
+def render_rw_gap_kpis(summary):
+    existing, proposed, pax, economics = st.columns(4)
+    existing.metric('Уже летает Red Wings', f'{summary.existing_rw_count} пар')
+    proposed.metric('Предлагаем новых маршрутов', summary.proposed_new_count)
+    proposed.caption(f'Из них без конкурентов: {summary.proposed_blue_ocean_count}')
+    pax.metric('Ожидаемый новый поток', f'{summary.proposed_annual_pax:,}'.replace(',', ' '))
+    pax.caption('пасс./год при заданной загрузке')
+    economics.metric('Новый EBITDAR / Бортов',
+                     f'{summary.proposed_ebitdar_mln_rub:,.1f} млн ₽ / {summary.required_aircraft_count} ВС')
+    st.caption('Вклад маршрутов до общесетевых затрат. Потребность в бортах оценена по норме SJ-100 для всех моделей. '
+               'Поток рассчитан по креслам, загрузке и частоте сценария.')
+
+
+def render_network_graph_kpis(before, after, before_nodes, after_nodes):
+    st.subheader('Эффект новой сети для связности регионов: было у RW и после запуска')
+    time, connectivity, access, centrality = st.columns(4)
+    time_change = after.weighted_travel_time_h - before.weighted_travel_time_h
+    time.metric('Взвешенное время в пути T_w', f'{after.weighted_travel_time_h:.2f} ч',
+                f'{time_change:+.1f} ч' + (' · экономия' if time_change < -0.05 else ''),
+                delta_color='inverse')
+    time.caption(f'До: {before.weighted_travel_time_h:.2f} ч')
+
+    for column, label, field in [
+        (connectivity, 'Связность по Тархову Kₜ', 'tarkhov_connectivity_idx'),
+        (access, 'Мультимодальная доступность MAI', 'multimodal_access_idx'),
+        (centrality, 'Средняя взвешенная центральность Cᴅʷ', 'avg_degree_centrality'),
+    ]:
+        start, end = getattr(before, field), getattr(after, field)
+        delta = f'{end / start - 1:+.1%}' if start else f'{end - start:+.4f}'
+        column.metric(label, f'{end:.4f}', delta)
+        column.caption(f'До: {start:.4f}')
+
+    baseline = {city.iata: city for city in before_nodes}
+    rows = [{
+        'Город': f'{city.city_name} ({city.iata})',
+        'Центральность до': baseline[city.iata].weighted_degree_centrality,
+        'Центральность после': city.weighted_degree_centrality,
+        'Время до, ч': baseline[city.iata].city_weighted_time_h,
+        'Время после, ч': city.city_weighted_time_h,
+        'MAI после': city.city_multimodal_index,
+    } for city in after_nodes]
+    st.dataframe(pd.DataFrame(rows).round(4), hide_index=True, use_container_width=True)
+    st.caption(f'В модели {before.active_routes_count} → {after.active_routes_count} прямых пар RW. '
+               'Сценарий включает все предложения отбора Dev 3 для выбранного ВС. '
+               'Сроки и реализуемость запуска проверяются отдельно по флоту и расписанию.')

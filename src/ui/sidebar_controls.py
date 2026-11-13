@@ -47,3 +47,33 @@ def render_sidebar_controls() -> Tuple[ScoringWeights, FinModelInput]:
     return weights, FinModelInput(load_factor_pct=load, avg_fare_rub=fare,
         weekly_freq_per_route=frequency, aircraft_seats=seats,
         active_routes_count=routes, scenario=scenario, hub_iata=hub)
+
+
+def render_gravity_controls() -> dict:
+    """Keep the same parameters for the field and matrix across lens switches."""
+    controls = st.session_state.setdefault('gravity_options', {
+        'gamma': 1.6, 'lam': 0.45, 'radius_km': 1250, 'mode': 'potential',
+        'exclude_existing_rw': False, 'show_proposals': False,
+    })
+    columns = st.columns(3)
+    controls['gamma'] = columns[0].slider('Степень затухания γ', 1.0, 2.6, controls['gamma'], 0.1, key='lens_gamma')
+    controls['lam'] = columns[1].slider('Затухание доезда λ', 0.20, 0.80, controls['lam'], 0.05, key='lens_lambda')
+    controls['radius_km'] = columns[2].slider('Радиус поля, км', 600, 2500, controls['radius_km'], 50, key='lens_radius')
+    modes = {'potential': 'Потенциал притяжения', 'anomaly': 'Аномалия дефицита: синий — провал, красный — пик'}
+    controls['mode'] = st.radio('Режим поля', list(modes), index=list(modes).index(controls['mode']),
+                               format_func=modes.get, horizontal=True, key='lens_field_mode')
+    filters = st.columns(2)
+    controls['exclude_existing_rw'] = filters[0].checkbox(
+        'Исключить существующие маршруты RW', controls['exclude_existing_rw'], key='lens_exclude_rw')
+    controls['show_proposals'] = filters[1].checkbox(
+        'Показать предлагаемые маршруты поверх поля', controls['show_proposals'], key='lens_show_proposals')
+    return controls
+
+
+def gravity_matrix_options() -> dict:
+    controls = st.session_state.get('gravity_options', {})
+    return {
+        'gamma': controls.get('gamma', 1.6),
+        'lam': controls.get('lam', 0.45),
+        'exclude_existing_rw': controls.get('exclude_existing_rw', False),
+    }

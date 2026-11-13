@@ -78,16 +78,26 @@ def render_sj100_roadmap(routes_df: pd.DataFrame, comparison: ComparisonBundleDT
         return
     from src.models.unit_economics import project_path_to_top2_airline
     st.subheader('Путь к №2 · целевой масштаб и ограничение флота')
-    waves = pd.DataFrame(project_path_to_top2_airline(fin_input, scored_cities))
-    # Baseline is an existing network, so the new-fleet constraint is not applied to it.
-    constrained = waves['fleet_constrained_total_pax_mln'].fillna(waves['total_pax_mln'])
+    waves = pd.DataFrame(project_path_to_top2_airline(fin_input, scored_cities)).sort_values('wave_id')
+    # The base period uses the existing network, before the new-fleet constraint.
+    constrained = waves['fleet_constrained_total_pax_mln'].where(
+        waves['wave_id'].ne(0), waves['total_pax_mln'],
+    )
     figure = go.Figure()
-    figure.add_scatter(x=waves['period'], y=waves['total_pax_mln'], name='Расчёт без лимита флота',
-                       mode='lines+markers', line=dict(color='#93a4ba', dash='dash'))
-    figure.add_scatter(x=waves['period'], y=constrained, name='С учётом выделенного флота',
-                       mode='lines+markers', line=dict(color='#ef4056', width=4))
-    figure.update_layout(height=350, yaxis_title='Пассажиропоток, млн / год', legend_orientation='h')
-    st.plotly_chart(figure, use_container_width=True)
+    for values, label, color, dash in [
+        (waves['total_pax_mln'], 'Расчёт без лимита флота', '#2563eb', 'dash'),
+        (constrained, 'С учётом выделенного флота', '#ef4056', 'solid'),
+    ]:
+        figure.add_scatter(
+            x=waves['wave_id'], y=values, customdata=waves['period'], name=label,
+            mode='lines+markers', line=dict(color=color, width=4, dash=dash),
+            marker=dict(size=9, color=color, line=dict(color='white', width=1)),
+            hovertemplate='%{customdata}<br>%{y:.2f} млн пассажиров в год',
+        )
+    figure.update_layout(height=350, yaxis_title='Пассажиропоток, млн / год',
+                         legend_orientation='h', hovermode='x unified')
+    figure.update_xaxes(tickmode='array', tickvals=waves['wave_id'], ticktext=waves['period'])
+    st.plotly_chart(figure, use_container_width=True, key='top2_growth_path')
     labels = {'period': 'Период', 'title': 'Волна', 'routes_count': 'Маршрутов',
         'fleet_total': 'Выделено бортов', 'fleet_required_model': 'Нужно бортов', 'fleet_gap': 'Дефицит бортов',
         'total_pax_mln': 'Поток без лимита, млн', 'fleet_constrained_total_pax_mln': 'Поток с лимитом, млн',
