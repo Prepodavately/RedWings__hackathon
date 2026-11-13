@@ -276,6 +276,53 @@ def test_complete_aviation_graph_does_not_clip_planar_normalization(live_network
     assert expanded.tarkhov_connectivity_idx == pytest.approx(66 / 30)
 
 
+@pytest.mark.parametrize("aircraft_id", ["crj200", "sj100_basic", "sj100_lr", "tu214", "mc21_310"])
+def test_dev3_aircraft_catalog_to_gravity_and_graph(live_network, aircraft_id):
+    """Реальная цепочка контрактов Dev 1 → Dev 3 → Dev 2 для Dev 4."""
+    from src.models.sj100_fleet import get_aircraft_gravity_knots, get_aircraft_spec
+    from src.models.unit_economics import evaluate_routes_by_aircraft_and_rw_gap
+
+    cities, routes, _ = live_network
+    before = routes.copy(deep=True)
+    knots = get_aircraft_gravity_knots(aircraft_id)
+    spec = get_aircraft_spec(aircraft_id)
+    gravity = calculate_gravity_matrix(cities, routes, distance_knots_km=knots, exclude_existing_rw=True)
+    assert gravity.attrs["range_knots_km"] == list(knots)
+    assert gravity.attrs["excluded_existing_rw_pairs"] == 16
+    distances = np.asarray(gravity.attrs["distance_km"])
+    values = gravity.to_numpy()
+    assert (values[(distances <= spec.min_km) | (distances >= spec.max_km)] == 0).all()
+    range_weights = np.asarray(gravity.attrs["range_weight"])
+    assert (range_weights[(distances >= spec.opt_low_km) & (distances <= spec.opt_high_km)] == 1).all()
+
+    market, summary = evaluate_routes_by_aircraft_and_rw_gap(routes, aircraft_id)
+    proposals = market.loc[market.proposal_bucket.eq("propose_new"), "pair_key"].tolist()
+    assert len(proposals) == summary.proposed_new_count
+    baseline, expanded, nodes_b, nodes_p = calculate_network_graph_metrics(cities, routes, proposals)
+    assert baseline.active_routes_count == summary.existing_rw_count == 8
+    assert expanded.active_routes_count == 8 + len(proposals)
+    assert expanded.weighted_travel_time_h <= baseline.weighted_travel_time_h
+    assert expanded.multimodal_access_idx >= baseline.multimodal_access_idx
+    assert expanded.tarkhov_connectivity_idx >= baseline.tarkhov_connectivity_idx
+    assert len(nodes_b) == len(nodes_p) == len(cities)
+    # Модель считает ровно переданный набор: shortlist, а не все кандидаты.
+    shortlisted = calculate_network_graph_metrics(cities, routes, proposals[:10])[1]
+    assert shortlisted.active_routes_count == 8 + min(10, len(proposals))
+    pd.testing.assert_frame_equal(routes, before)
+
+
+def test_dev3_low_fare_does_not_create_proposed_edges(live_network):
+    from src.models.unit_economics import evaluate_routes_by_aircraft_and_rw_gap
+
+    cities, routes, _ = live_network
+    table, summary = evaluate_routes_by_aircraft_and_rw_gap(routes, avg_fare_rub=100., subsidy_cut_pct=100.)
+    proposals = table.loc[table.proposal_bucket.eq("propose_new"), "pair_key"].tolist()
+    assert summary.proposed_new_count == 0 and proposals == []
+    baseline, expanded, _, _ = calculate_network_graph_metrics(cities, routes, proposals)
+    # Возможные пересадки по уже имеющимся рёбрам не являются новыми маршрутами.
+    assert baseline.active_routes_count == expanded.active_routes_count == 8
+
+
 def test_legacy_population_cannot_silently_ignore_lambda(small_network):
     cities = small_network[0].assign(effective_population_mln=[1., 2., 3.]).drop(
         columns=["population_city_mln", "agglomeration_members"])
