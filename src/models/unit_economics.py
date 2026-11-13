@@ -35,12 +35,15 @@ from typing import List, Sequence
 import pandas as pd
 
 from src.models.sj100_fleet import (
+    AIRCRAFT_CATALOG, get_aircraft_spec,
     P2P_FLEET_FACTOR, ROUND_TRIPS_PER_AIRCRAFT_WEEK, calculate_required_sj100_fleet,
 )
 from src.schemas.contracts import (
+    AircraftModelId,
     CityScoreDTO,
     ComparisonBundleDTO,
     FinModelInput,
+    FleetGapSummaryDTO,
     HypothesisCode,
     HypothesisResultDTO,
 )
@@ -362,6 +365,177 @@ def project_path_to_top2_airline(params: FinModelInput, top_cities: List[CitySco
             "assumptions": "Постоянный рынок 108.9 млн, S7 11.8%, Уральские 8.5%; нет каннибализации; поставки и спрос не подтверждены; до 2027-H2 только перераспределение существующего флота.",
         })
     return rows
+
+
+def _deduplicate_aircraft_market_routes(routes_df: pd.DataFrame) -> pd.DataFrame:
+    """Одна строка на неориентированную пару; входная витрина не изменяется.
+
+    Частоты — максимум по направлениям, субсидия — any. Прочие поля Dev 1
+    сохраняются из первого направления в порядке IATA (включая координаты).
+    Это справочные поля этого направления, не суммы/средние по паре.
+    Пропуск частоты не считается нулем: иначе появятся ложные белые пятна.
+    """
+    required = {"origin_iata", "dest_iata", "distance_km", "subsidy_eligible",
+                "own_flights_weekly", "competitor_flights_weekly"}
+    if not isinstance(routes_df, pd.DataFrame):
+        raise ValueError("routes_df должен быть DataFrame")
+    missing = required - set(routes_df.columns)
+    if missing:
+        raise ValueError(f"В routes_df отсутствуют колонки: {sorted(missing)}")
+    if not routes_df.columns.is_unique:
+        raise ValueError("Названия колонок routes_df не должны повторяться")
+    records = routes_df.to_dict("records")
+    pairs = {}
+    for row in sorted(records, key=lambda r: (str(r["origin_iata"]), str(r["dest_iata"]))):
+        for name in ("origin_iata", "dest_iata"):
+            code = row[name]
+            if not isinstance(code, str) or len(code) != 3 or not code.isascii() or not code.isalpha() or not code.isupper():
+                raise ValueError(f"{name} должен быть трехбуквенным IATA-кодом")
+        if row["origin_iata"] == row["dest_iata"]:
+            raise ValueError("Маршрут не может вести в тот же аэропорт")
+        for name in ("distance_km", "own_flights_weekly", "competitor_flights_weekly"):
+            value = row[name]
+            _finite_number(name, value)
+            if value < 0 or (name == "distance_km" and value == 0):
+                raise ValueError(f"Некорректное значение {name}")
+        if not isinstance(row["subsidy_eligible"], bool):
+            raise ValueError("subsidy_eligible должен быть bool")
+        key = tuple(sorted((row["origin_iata"], row["dest_iata"])))
+        if key not in pairs:
+            pairs[key] = {**row, "pair_key": key}
+        else:
+            pair = pairs[key]
+            for name in ("distance_km", "own_flights_weekly", "competitor_flights_weekly"):
+                pair[name] = max(pair[name], row[name])
+            pair["subsidy_eligible"] |= row["subsidy_eligible"]
+    columns = list(routes_df.columns)
+    if "pair_key" not in columns:
+        columns.append("pair_key")
+    return pd.DataFrame([pairs[key] for key in sorted(pairs)], columns=columns)
+
+
+def evaluate_routes_by_aircraft_and_rw_gap(
+    routes_df: pd.DataFrame,
+    aircraft_id: AircraftModelId = "sj100_basic",
+    load_factor_pct: float = 84.0,
+    avg_fare_rub: float = 8400.0,
+    weekly_freq: int = 5,
+    subsidy_cut_pct: float = 0.0,
+    min_belf_buffer_pct: float = 5.0,
+) -> tuple[pd.DataFrame, FleetGapSummaryDTO]:
+    """Каталог ВС × реальные пары Dev 1: текущая сеть и кандидаты расширения.
+
+    Число пар вычисляется из входа (66 на полной витрине), а не задано константой.
+    Тариф и затраты относятся к одному плечу; частота — к паре рейсов.
+    Это маршрутный вклад до общесетевых постоянных расходов, без подстройки
+    загрузки под спрос/конкуренцию. Статус keep_or_boost означает присутствие
+    RW в пределах дальности, а не гарантию прибыльности существующего рейса.
+
+    По уточнению пользователя BELF согласован с EBITDAR: знаменатель
+    seats * fare без множителя 2 (затраты и тариф — на одно плечо).
+    belf_pct ограничен 0..150% по ТЗ; belf_economic_pct — порог без обрезки.
+    Отбор propose_new использует belf_pct и заданный запас загрузки.
+    Флаг субсидии хотя бы одного направления применяется к обоим плечам
+    пары: это сценарий, не подтвержденное право RW на субсидию/квоту.
+    Потребность всех ВС оценивается эвристикой SJ-100 по требованию ТЗ;
+    при нуле предложений max(1, count) оставляет минимальный резерв 2 борта.
+    """
+    from src.parsers.build_dataset import FLIGHT_FIXED_COST_RUB, FUEL_COST_RUB_PER_KM
+
+    spec = get_aircraft_spec(aircraft_id)
+    for name, value in (("load_factor_pct", load_factor_pct),
+                        ("subsidy_cut_pct", subsidy_cut_pct),
+                        ("min_belf_buffer_pct", min_belf_buffer_pct)):
+        _finite_number(name, value)
+        if not 0 <= value <= 100:
+            raise ValueError(f"{name} должен быть в диапазоне 0..100")
+    _finite_number("avg_fare_rub", avg_fare_rub)
+    if avg_fare_rub <= 0:
+        raise ValueError("avg_fare_rub должен быть положительным")
+    if isinstance(weekly_freq, bool) or not isinstance(weekly_freq, int) or weekly_freq <= 0:
+        raise ValueError("weekly_freq должен быть положительным целым числом")
+    routes = _deduplicate_aircraft_market_routes(routes_df)
+    routes["aircraft_id"] = aircraft_id
+    routes["aircraft_range_status"] = [
+        "out_of_range" if d > spec.max_km else
+        "too_short" if d < spec.min_km else
+        "optimal" if spec.opt_low_km <= d <= spec.opt_high_km else "acceptable"
+        for d in routes["distance_km"]
+    ]
+    penalty = routes["aircraft_range_status"].eq("too_short").map(
+        {True: spec.short_haul_penalty, False: 1.0}
+    )
+    routes["flight_cost_ac"] = (
+        (FLIGHT_FIXED_COST_RUB + FUEL_COST_RUB_PER_KM * routes["distance_km"].astype(float))
+        * (spec.seats / 100.0) * spec.cask_multiplier * penalty
+    )
+    routes["subsidy_per_flight_rub"] = (
+        routes["subsidy_eligible"].astype(bool).astype(float)
+        * _SCENARIOS["base"].subsidy_per_flight_rub * (1 - subsidy_cut_pct / 100)
+    )
+    routes["belf_economic_pct"] = (
+        (routes["flight_cost_ac"] - routes["subsidy_per_flight_rub"])
+        / (spec.seats * avg_fare_rub) * 100
+    )
+    routes["belf_pct"] = routes["belf_economic_pct"].clip(0.0, 150.0)
+    flights = weekly_freq * 2 * WEEKS_PER_YEAR
+    routes["annual_flights"] = flights
+    routes["annual_pax"] = int(flights * spec.seats * (load_factor_pct / 100.0))
+    routes["annual_subsidy_rub"] = flights * routes["subsidy_per_flight_rub"]
+    routes["annual_ebitdar_mln"] = (
+        routes["annual_pax"] * avg_fare_rub + routes["annual_subsidy_rub"]
+        - flights * routes["flight_cost_ac"]
+    ) / 1e6
+    existing = routes["own_flights_weekly"].gt(0)
+    feasible = routes["aircraft_range_status"].ne("out_of_range")
+    proposed = (
+        ~existing & routes["aircraft_range_status"].isin(["optimal", "acceptable"])
+        & routes["belf_pct"].le(load_factor_pct - min_belf_buffer_pct)
+    )
+    routes["proposal_bucket"] = "not_fit"
+    routes.loc[existing & feasible, "proposal_bucket"] = "keep_or_boost"
+    routes.loc[proposed, "proposal_bucket"] = "propose_new"
+    count = int(proposed.sum())
+    summary = FleetGapSummaryDTO(
+        aircraft_id=aircraft_id,
+        total_market_pairs=len(routes),
+        feasible_for_aircraft_count=int(feasible.sum()),
+        optimal_range_count=int(routes["aircraft_range_status"].eq("optimal").sum()),
+        existing_rw_count=int(existing.sum()),
+        existing_rw_fit_count=int((existing & feasible).sum()),
+        proposed_new_count=count,
+        proposed_blue_ocean_count=int((proposed & routes["competitor_flights_weekly"].eq(0)).sum()),
+        proposed_annual_pax=int(routes.loc[proposed, "annual_pax"].sum()),
+        proposed_ebitdar_mln_rub=float(routes.loc[proposed, "annual_ebitdar_mln"].sum()),
+        required_aircraft_count=calculate_required_sj100_fleet(max(1, count), weekly_freq, is_hub=False),
+    )
+    routes.attrs["assumptions"] = {
+        "pair_aggregation": "max distance/frequency; any subsidy; remaining fields from one source direction",
+        "subsidy_scope": "145000 RUB per flight on both legs if either direction eligible; RW eligibility unverified",
+        "financial_scope": "route contribution before network overhead, rent, depreciation, interest and tax",
+        "belf_selection_formula": "(flight_cost_ac - subsidy) / (seats * fare) * 100, clipped to 0..150; corrected per user clarification",
+        "belf_economic_formula": "(flight_cost_ac - subsidy) / (seats * fare) * 100, unclipped",
+        "fleet_method": "SJ-100 P2P heuristic for all models, max(1, proposed routes); not a timetable",
+        "demand": "input load for all pairs; not validated against route demand",
+    }
+    return routes, summary
+
+
+def compare_all_aircraft_models(
+    routes_df: pd.DataFrame,
+    load_factor_pct: float = 84.0,
+    avg_fare_rub: float = 8400.0,
+    weekly_freq: int = 5,
+    subsidy_cut_pct: float = 0.0,
+) -> list[FleetGapSummaryDTO]:
+    """Пять сводок в порядке AIRCRAFT_CATALOG для таблицы Dev 4."""
+    return [
+        evaluate_routes_by_aircraft_and_rw_gap(
+            routes_df, aircraft_id, load_factor_pct, avg_fare_rub,
+            weekly_freq, subsidy_cut_pct,
+        )[1]
+        for aircraft_id in AIRCRAFT_CATALOG
+    ]
 
 
 def _route_level_pnl(
