@@ -14,11 +14,11 @@ import streamlit as st
 
 from src.ui.kpi_cards import (
     render_comparison_kpis, render_route_economics, render_fleet_stress,
-    render_svx_kuf_comparison, render_assumptions_audit,
+    render_svx_kuf_comparison, render_assumptions_audit, render_network_graph_kpis,
 )
-from src.ui.map_renderer import render_route_network_map
+from src.ui.map_renderer import render_network_lenses, render_route_network_map
 from src.ui.roadmap_chart import render_sj100_roadmap
-from src.ui.sidebar_controls import render_sidebar_controls
+from src.ui.sidebar_controls import gravity_matrix_options, render_sidebar_controls
 
 USE_MOCKS = os.getenv('USE_MOCKS', '0') == '1'
 ROOT = Path(__file__).resolve().parent
@@ -27,9 +27,12 @@ REPORTS = ROOT / 'src/scoring/reports/hub'
 if USE_MOCKS:
     from src.mocks.mock_provider import evaluate_hypotheses, get_network_routes, get_scored_cities
 else:
+    from src.models.sj100_fleet import get_aircraft_gravity_knots
     from src.models.unit_economics import evaluate_hypotheses
     from src.parsers.build_dataset import get_network_routes
-    from src.scoring.city_scorer import get_scored_cities
+    from src.scoring.city_scorer import (
+        calculate_gravity_matrix, calculate_network_graph_metrics, get_scored_cities, load_features,
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -46,7 +49,19 @@ def _report(filename):
     return _load_report(str(path), path.stat().st_mtime_ns)
 
 
-def _render_scoring(cities):
+@st.cache_data(max_entries=32, show_spinner=False)
+def _live_gravity(features, routes, aircraft_id, options):
+    return calculate_gravity_matrix(
+        features, routes, distance_knots_km=get_aircraft_gravity_knots(aircraft_id), **options,
+    )
+
+
+@st.cache_data(max_entries=32, show_spinner=False)
+def _graph_metrics(features, routes, proposed_pairs, lam):
+    return calculate_network_graph_metrics(features, routes, proposed_pairs, lam=lam)
+
+
+def _render_scoring(cities, features=None, market_routes=None, aircraft_id=None, proposed_pairs=None):
     st.subheader('12 городов · текущий скоринг')
     table = pd.DataFrame([asdict(city) for city in cities])
     figure = go.Figure(go.Bar(x=table['total_score'], y=table['city_name'], orientation='h',
@@ -62,7 +77,24 @@ def _render_scoring(cities):
         st.info('ДЕМО: отчёты реального скоринга не смешиваются с синтетическими городами.')
         return
     st.subheader('Гравитация, охват аэропортов и узел-ножницы')
-    st.info('Ниже — сохранённые отчёты Dev 2 для отбора нового хаба. Они не пересчитываются ползунками весов. SVX исключён из кандидатов нового хаба; текущий рейтинг выше использует интерфейсный режим скоринга Dev 2.')
+    options = gravity_matrix_options()
+    matrix = _live_gravity(features, market_routes, aircraft_id, options)
+    st.markdown('**Потенциал направлений «город → город»**')
+    names = {city.iata: city.city_name for city in cities}
+    figure = go.Figure(go.Heatmap(
+        x=[f'{code} · {names.get(code, code)}' for code in matrix.columns],
+        y=[f'{code} · {names.get(code, code)}' for code in matrix.index],
+        z=matrix.to_numpy(), colorscale=[[0, '#f1f4f9'], [.4, '#6199d4'], [1, '#bd2548']],
+        colorbar_title='Индекс', hovertemplate='%{y} → %{x}<br>Потенциал: %{z:.6g}<extra></extra>',
+    ))
+    figure.update_layout(height=580, xaxis_tickangle=-55, margin=dict(l=10, r=10, t=10, b=10))
+    st.plotly_chart(figure, use_container_width=True, key='live_gravity_matrix')
+    st.caption(f'Параметры карты: {aircraft_id} · γ {options["gamma"]:.1f} · λ {options["lam"]:.2f} · '
+               f'рейсы RW {"исключены" if options["exclude_existing_rw"] else "учтены"}. '
+               'Цвет показывает относительный индекс потенциала.')
+    render_network_graph_kpis(*_graph_metrics(features, market_routes, proposed_pairs, options['lam']))
+
+    st.info('Справочные отчёты Dev 2 ниже используют исходные параметры. В отборе нового хаба SVX исключён.')
     gravity = _report('gravity_hub_potential.csv')
     if gravity is not None:
         live = table[['iata', 'rank', 'total_score']].rename(columns={'rank': 'Текущий ранг', 'total_score': 'Текущий балл'})
@@ -71,18 +103,6 @@ def _render_scoring(cities):
         st.dataframe(merged[['city_name', 'iata', 'Текущий ранг', 'Текущий балл', 'gravity_rank_eligible', 'gravity_hub_potential', 'eligible']].rename(columns={
             'city_name': 'Город', 'gravity_rank_eligible': 'Ранг гравитации (новый хаб)',
             'gravity_hub_potential': 'Гравитационный потенциал', 'eligible': 'Допущен как новый хаб'}), hide_index=True, use_container_width=True)
-    matrix = _report('gravity_matrix.csv')
-    if matrix is not None:
-        matrix = matrix.set_index('origin_iata')
-        st.markdown('**Потенциал направлений «город → город»**')
-        names = {city.iata: city.city_name for city in cities}
-        figure = go.Figure(go.Heatmap(x=[f'{code} · {names.get(code, code)}' for code in matrix.columns],
-            y=[f'{code} · {names.get(code, code)}' for code in matrix.index], z=matrix.to_numpy(),
-            colorscale=[[0, '#f1f4f9'], [.4, '#6199d4'], [1, '#bd2548']], colorbar_title='Индекс',
-            hovertemplate='%{y} → %{x}<br>Потенциал: %{z:.6f}<extra></extra>'))
-        figure.update_layout(height=580, xaxis_tickangle=-55, margin=dict(l=10, r=10, t=10, b=10))
-        st.plotly_chart(figure, use_container_width=True)
-        st.caption('Относительный гравитационный индекс, не пассажиры и не выручка. Ноль может означать ограничение модели, а не отсутствие спроса.')
     population = _report('effective_population.csv')
     if population is not None:
         st.markdown('**Охват аэропортов с учётом доступности**')
@@ -139,21 +159,16 @@ def main():
         return
     params = replace(requested, active_routes_count=count)
     if count < requested.active_routes_count:
-        st.info(f'Выбрано {requested.active_routes_count} маршрутов; провайдер позволяет сравнить {count}. Карта и все расчёты используют {count}; отсутствующие направления не добавляются.')
+        st.info(f'Выбрано {requested.active_routes_count} маршрутов; провайдер позволяет сравнить {count}. Сравнение гипотез и очереди запуска используют {count}.')
     comparison = evaluate_hypotheses(params, cities)
-    selected = st.radio('Сеть на карте и в очередях запуска', ['p2p', 'hub'],
+    selected = st.radio('Сеть для очередей запуска', ['p2p', 'hub'],
         index=0 if comparison.winner == 'p2p' else 1,
         format_func=lambda code: 'Б · Прямые рейсы' if code == 'p2p' else f'А · Хаб {params.hub_iata}',
         horizontal=True, key='display_network')
     routes = networks[selected].head(count).copy()
-    if not USE_MOCKS:
-        features = ROOT / 'data/processed/cities_features.parquet'
-        if features.exists():
-            coordinates = pd.read_parquet(features, columns=['iata', 'lat', 'lon'])
-            routes.attrs['city_coordinates'] = {row.iata: (row.lat, row.lon) for row in coordinates.itertuples()}
     st.caption(f'Расчётная сеть: {count} пар городов · {params.weekly_freq_per_route} пар рейсов/неделю на маршрут · {count * params.weekly_freq_per_route * 2 * 52:,} вылетов в год. Лидер модели: {comparison.winner.upper()}.')
     battle, network, scoring, cannibalization, roadmap = st.tabs([
-        '💰 Битва гипотез', '🗺️ Карта и крюк через Москву',
+        '💰 Битва гипотез', '🗺️ Три линзы карты',
         '🏆 Скоринг и транзит', '🧭 KUF vs SVX', '🚀 Дорожная карта и путь к №2'])
     with battle:
         stress = render_fleet_stress(params, networks['p2p'].head(count).copy())
@@ -164,9 +179,17 @@ def main():
         render_route_economics(params, networks['p2p'].head(count).copy(), stress)
         render_assumptions_audit(params, float(100 - st.session_state.get('subsidy_cut_pct', 0)))
     with network:
-        render_route_network_map(routes, cities)
+        if USE_MOCKS:
+            render_route_network_map(routes, cities)
+        else:
+            features = load_features()
+            market_routes = pd.read_parquet(ROOT / 'data/processed/routes_proof.parquet')
+            aircraft_id, proposed_pairs = render_network_lenses(features, market_routes, cities, params)
     with scoring:
-        _render_scoring(cities)
+        if USE_MOCKS:
+            _render_scoring(cities)
+        else:
+            _render_scoring(cities, features, market_routes, aircraft_id, proposed_pairs)
     with cannibalization:
         render_svx_kuf_comparison(params, cities)
     with roadmap:
