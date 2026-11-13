@@ -10,13 +10,20 @@ from src.models.unit_economics import (
     evaluate_route_level_economics, evaluate_scissor_hub_economics,
     build_strategy_switching_matrix, run_monte_carlo_stress_test,
     run_financial_monte_carlo, evaluate_svx_kuf_cannibalization, get_assumptions_audit_table,
+    evaluate_routes_by_aircraft_and_rw_gap, compare_all_aircraft_models,
 )
 import pandas as pd
 
-from src.models.sj100_fleet import calculate_required_sj100_fleet, build_sj100_delivery_roadmap
+from src.models.sj100_fleet import (
+    AIRCRAFT_CATALOG, get_aircraft_spec, get_aircraft_gravity_knots,
+    calculate_required_sj100_fleet, build_sj100_delivery_roadmap,
+)
 from src.models.unit_economics import (evaluate_hypotheses, simulate_fare_elasticity_curve,
     evaluate_digital_one_click_impact, project_path_to_top2_airline)
-from src.schemas.contracts import CityScoreDTO, ComparisonBundleDTO, FinModelInput, HypothesisResultDTO
+from src.schemas.contracts import (
+    AircraftSpecDTO, FleetGapSummaryDTO,
+    CityScoreDTO, ComparisonBundleDTO, FinModelInput, HypothesisResultDTO,
+)
 
 
 @pytest.fixture
@@ -765,3 +772,198 @@ def test_assumptions_audit_sources_and_calibration_limitations():
     assert len({row["assumption"] for row in result["assumptions"]}) == len(result["assumptions"])
     assert all(row["source"] and row["limitation"] for row in result["assumptions"])
     assert any(row["operator"] != "Ред Вингс" for row in result["subsidy_register"])
+
+
+@pytest.mark.parametrize("aircraft_id,name,seats,knots,cask,penalty", [
+    ("crj200", "CRJ-200 (50 мест · Конкуренты)", 50, (300, 450, 1200, 1450), 1.22, 1.10),
+    ("sj100_basic", "SJ-100 Basic (100 мест · Волна 1-2)", 100, (350, 600, 1600, 2450), 1., 1.15),
+    ("sj100_lr", "SSJ-100 / SJ-100 LR (100 мест · Резерв)", 100, (400, 700, 2200, 3050), 1.03, 1.15),
+    ("tu214", "Ту-214 (210 мест · Волна 2-3)", 210, (1100, 1400, 4200, 5200), .86, 1.28),
+    ("mc21_310", "МС-21-310 (211 мест · Волна 3 до 2030)", 211, (1100, 1400, 4500, 5100), .78, 1.25),
+])
+def test_aircraft_catalog_and_gravity_knots(aircraft_id, name, seats, knots, cask, penalty):
+    from dataclasses import FrozenInstanceError
+    spec = get_aircraft_spec(aircraft_id)
+    assert isinstance(spec, AircraftSpecDTO)
+    assert spec is AIRCRAFT_CATALOG[aircraft_id]
+    assert (spec.id, spec.name, spec.seats) == (aircraft_id, name, seats)
+    assert get_aircraft_gravity_knots(aircraft_id) == knots
+    assert all(isinstance(v, float) for v in get_aircraft_gravity_knots(aircraft_id))
+    assert spec.cask_multiplier == cask and spec.short_haul_penalty == penalty
+    with pytest.raises(FrozenInstanceError):
+        spec.seats = 999
+
+
+@pytest.mark.parametrize("aircraft_id", ["unknown", "SJ100", "", None, [], True])
+def test_aircraft_catalog_rejects_unknown_id(aircraft_id):
+    for function in (get_aircraft_spec, get_aircraft_gravity_knots):
+        with pytest.raises(ValueError, match="aircraft_id"):
+            function(aircraft_id)
+
+
+@pytest.fixture
+def aircraft_route_pair():
+    return pd.DataFrame([
+        {"origin_iata": "KUF", "dest_iata": "SVX", "distance_km": 1000,
+         "own_flights_weekly": 0, "competitor_flights_weekly": 0, "subsidy_eligible": False},
+        {"origin_iata": "SVX", "dest_iata": "KUF", "distance_km": 1000,
+         "own_flights_weekly": 0, "competitor_flights_weekly": 0, "subsidy_eligible": True},
+    ])
+
+
+def test_aircraft_gap_deduplication_and_annual_accounting(aircraft_route_pair):
+    original = aircraft_route_pair.copy(deep=True)
+    table, summary = evaluate_routes_by_aircraft_and_rw_gap(aircraft_route_pair)
+    pd.testing.assert_frame_equal(aircraft_route_pair, original)
+    assert isinstance(summary, FleetGapSummaryDTO)
+    assert len(table) == summary.total_market_pairs == 1
+    row = table.iloc[0]
+    assert row.pair_key == ("KUF", "SVX") and row.subsidy_eligible
+    assert row.aircraft_range_status == "optimal"
+    assert row.flight_cost_ac == 695000 and row.subsidy_per_flight_rub == 145000
+    assert row.annual_flights == 520 and row.annual_pax == 43680
+    assert row.annual_subsidy_rub == 75400000
+    assert row.annual_ebitdar_mln == pytest.approx(80.912)
+    assert row.belf_pct == pytest.approx(550000 / 840000 * 100)
+    assert row.proposal_bucket == "propose_new"
+    assert summary.proposed_new_count == summary.proposed_blue_ocean_count == 1
+    assert summary.proposed_annual_pax == 43680
+    assert summary.proposed_ebitdar_mln_rub == pytest.approx(80.912)
+    assert summary.required_aircraft_count == 2
+    # Повторение витрины и перестановка направлений не удваивают экономику.
+    repeated, repeated_summary = evaluate_routes_by_aircraft_and_rw_gap(
+        pd.concat([aircraft_route_pair, aircraft_route_pair]).sample(frac=1, random_state=42)
+    )
+    pd.testing.assert_frame_equal(table, repeated)
+    assert repeated_summary == summary
+
+
+def test_aircraft_gap_frequency_max_and_reverse_competition(aircraft_route_pair):
+    aircraft_route_pair["own_flights_weekly"] = [2, 5]
+    aircraft_route_pair["competitor_flights_weekly"] = [0, 3]
+    table, summary = evaluate_routes_by_aircraft_and_rw_gap(aircraft_route_pair)
+    row = table.iloc[0]
+    assert row.own_flights_weekly == 5 and row.competitor_flights_weekly == 3
+    assert row.proposal_bucket == "keep_or_boost"
+    assert summary.existing_rw_count == summary.existing_rw_fit_count == 1
+    assert summary.proposed_new_count == 0
+    aircraft_route_pair["own_flights_weekly"] = 0
+    _, summary = evaluate_routes_by_aircraft_and_rw_gap(aircraft_route_pair)
+    assert summary.proposed_new_count == 1 and summary.proposed_blue_ocean_count == 0
+
+
+def test_aircraft_gap_subsidy_cut_and_belf_zero_profit(aircraft_route_pair):
+    full, _ = evaluate_routes_by_aircraft_and_rw_gap(aircraft_route_pair)
+    half, _ = evaluate_routes_by_aircraft_and_rw_gap(aircraft_route_pair, subsidy_cut_pct=50)
+    zero, summary = evaluate_routes_by_aircraft_and_rw_gap(aircraft_route_pair, subsidy_cut_pct=100)
+    assert zero.iloc[0].annual_subsidy_rub == 0
+    assert half.iloc[0].annual_subsidy_rub == full.iloc[0].annual_subsidy_rub / 2
+    assert full.iloc[0].annual_ebitdar_mln - zero.iloc[0].annual_ebitdar_mln == pytest.approx(75.4)
+    assert full.iloc[0].belf_pct < half.iloc[0].belf_pct < zero.iloc[0].belf_pct
+    assert summary.proposed_new_count == 0  # Прибыль положительна, но запаса 5 п.п. нет.
+    for cut, reference in [(0, full), (100, zero)]:
+        at_belf, _ = evaluate_routes_by_aircraft_and_rw_gap(
+            aircraft_route_pair, subsidy_cut_pct=cut,
+            load_factor_pct=float(reference.iloc[0].belf_pct), min_belf_buffer_pct=0,
+        )
+        # int(annual_pax) может убрать менее одного тарифа из выручки.
+        assert abs(at_belf.iloc[0].annual_ebitdar_mln) <= 8400 / 1e6
+
+
+@pytest.mark.parametrize("aircraft_id", AIRCRAFT_CATALOG)
+def test_aircraft_range_boundaries_and_existing_route_rules(aircraft_route_pair, aircraft_id):
+    spec = get_aircraft_spec(aircraft_id)
+    for distance, expected in [
+        (spec.min_km - 1, "too_short"), (spec.min_km, "acceptable"),
+        (spec.opt_low_km, "optimal"), (spec.opt_high_km, "optimal"),
+        (spec.max_km, "acceptable"), (spec.max_km + 1, "out_of_range"),
+    ]:
+        aircraft_route_pair["distance_km"] = distance
+        aircraft_route_pair["own_flights_weekly"] = 0
+        table, _ = evaluate_routes_by_aircraft_and_rw_gap(aircraft_route_pair, aircraft_id)
+        assert table.iloc[0].aircraft_range_status == expected
+        if expected in ("too_short", "out_of_range"):
+            assert table.iloc[0].proposal_bucket == "not_fit"
+        aircraft_route_pair["own_flights_weekly"] = 2
+        table, summary = evaluate_routes_by_aircraft_and_rw_gap(aircraft_route_pair, aircraft_id)
+        assert table.iloc[0].proposal_bucket == ("not_fit" if expected == "out_of_range" else "keep_or_boost")
+        assert summary.existing_rw_fit_count == int(expected != "out_of_range")
+
+
+@pytest.mark.parametrize("aircraft_id", ["tu214", "mc21_310"])
+def test_large_aircraft_short_haul_penalty_increases_belf(aircraft_route_pair, aircraft_id):
+    aircraft_route_pair["subsidy_eligible"] = False
+    table, _ = evaluate_routes_by_aircraft_and_rw_gap(aircraft_route_pair, aircraft_id)
+    spec, row = get_aircraft_spec(aircraft_id), table.iloc[0]
+    unpenalized_cost = 695000 * spec.seats / 100 * spec.cask_multiplier
+    unpenalized_belf = unpenalized_cost / (spec.seats * 8400) * 100
+    assert row.aircraft_range_status == "too_short"
+    assert row.flight_cost_ac == pytest.approx(unpenalized_cost * spec.short_haul_penalty)
+    assert row.belf_pct == pytest.approx(unpenalized_belf * spec.short_haul_penalty)
+    assert row.belf_pct > unpenalized_belf
+
+
+def test_aircraft_gap_real_dev1_market_and_all_model_summaries():
+    from pathlib import Path
+    routes = pd.read_parquet(Path(__file__).resolve().parents[1] / "data/processed/routes_proof.parquet")
+    original = routes.copy(deep=True)
+    summaries = compare_all_aircraft_models(routes, 84, 8400, 5, 0)
+    assert [s.aircraft_id for s in summaries] == list(AIRCRAFT_CATALOG)
+    for summary in summaries:
+        table, individual = evaluate_routes_by_aircraft_and_rw_gap(routes, summary.aircraft_id)
+        assert summary == individual
+        assert summary.total_market_pairs == len(table) == 66
+        assert summary.existing_rw_count == 8 and table.pair_key.is_unique
+        proposed = table[table.proposal_bucket == "propose_new"]
+        assert summary.proposed_new_count == len(proposed)
+        assert summary.proposed_annual_pax == proposed.annual_pax.sum()
+        assert summary.proposed_ebitdar_mln_rub == pytest.approx(proposed.annual_ebitdar_mln.sum())
+        assert summary.proposed_blue_ocean_count == (proposed.competitor_flights_weekly == 0).sum()
+        assert (proposed.annual_ebitdar_mln > 0).all()
+        assert summary.required_aircraft_count == calculate_required_sj100_fleet(max(1, len(proposed)), 5, False)
+        assert {"lat_o", "lon_o", "lat_d", "lon_d", "origin_city", "dest_city"} <= set(table)
+    feasible = {s.aircraft_id: s.feasible_for_aircraft_count for s in summaries}
+    assert feasible["crj200"] == 54 < feasible["sj100_basic"] == 65 < feasible["tu214"] == 66
+    pd.testing.assert_frame_equal(routes, original)
+
+
+def test_aircraft_gap_no_proposals_empty_market_and_clipped_belf(aircraft_route_pair):
+    table, summary = evaluate_routes_by_aircraft_and_rw_gap(aircraft_route_pair, avg_fare_rub=100)
+    assert table.iloc[0].belf_pct == 150 and table.iloc[0].belf_economic_pct > 150
+    assert summary.proposed_new_count == summary.proposed_annual_pax == 0
+    assert summary.proposed_ebitdar_mln_rub == 0
+    assert summary.required_aircraft_count == 2  # Явное max(1, count) из ТЗ.
+    table, summary = evaluate_routes_by_aircraft_and_rw_gap(aircraft_route_pair.iloc[:0])
+    assert table.empty and summary.total_market_pairs == summary.existing_rw_count == 0
+    assert summary.proposed_new_count == 0
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"load_factor_pct": -1}, {"load_factor_pct": 101}, {"load_factor_pct": float("nan")},
+    {"avg_fare_rub": 0}, {"avg_fare_rub": float("inf")}, {"avg_fare_rub": True},
+    {"weekly_freq": 0}, {"weekly_freq": 1.5}, {"weekly_freq": True},
+    {"subsidy_cut_pct": -1}, {"subsidy_cut_pct": 101},
+    {"min_belf_buffer_pct": -1}, {"min_belf_buffer_pct": float("nan")},
+    {"aircraft_id": "unknown"},
+])
+def test_aircraft_gap_invalid_controls(aircraft_route_pair, kwargs):
+    with pytest.raises(ValueError):
+        evaluate_routes_by_aircraft_and_rw_gap(aircraft_route_pair, **kwargs)
+
+
+@pytest.mark.parametrize("column,value", [
+    ("origin_iata", "kuf"), ("dest_iata", "KUF"), ("distance_km", -1),
+    ("distance_km", float("inf")), ("subsidy_eligible", "False"),
+    ("own_flights_weekly", float("nan")), ("competitor_flights_weekly", -1),
+    ("competitor_flights_weekly", pd.NA),
+])
+def test_aircraft_gap_invalid_market_rows(aircraft_route_pair, column, value):
+    aircraft_route_pair[column] = aircraft_route_pair[column].astype(object)
+    aircraft_route_pair.loc[0, column] = value
+    with pytest.raises(ValueError):
+        evaluate_routes_by_aircraft_and_rw_gap(aircraft_route_pair)
+
+
+def test_aircraft_gap_missing_columns(aircraft_route_pair):
+    with pytest.raises(ValueError, match="own_flights_weekly"):
+        evaluate_routes_by_aircraft_and_rw_gap(aircraft_route_pair.drop(columns="own_flights_weekly"))

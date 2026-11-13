@@ -13,6 +13,55 @@
 
 from math import ceil
 
+from src.schemas.contracts import AircraftModelId, AircraftSpecDTO
+
+# Плановые ограничения и относительные расходы из ТЗ команды.
+# Диапазоны не заменяют РЛЭ, ограничения конкретного борта/аэропорта и payload-range.
+AIRCRAFT_CATALOG: dict[AircraftModelId, AircraftSpecDTO] = {
+    "crj200": AircraftSpecDTO(
+        id="crj200", name="CRJ-200 (50 мест · Конкуренты)", seats=50,
+        min_km=300, opt_low_km=450, opt_high_km=1200, max_km=1450,
+        cask_multiplier=1.22, short_haul_penalty=1.10,
+    ),
+    "sj100_basic": AircraftSpecDTO(
+        id="sj100_basic", name="SJ-100 Basic (100 мест · Волна 1-2)", seats=100,
+        min_km=350, opt_low_km=600, opt_high_km=1600, max_km=2450,
+        cask_multiplier=1.00, short_haul_penalty=1.15,
+    ),
+    "sj100_lr": AircraftSpecDTO(
+        id="sj100_lr", name="SSJ-100 / SJ-100 LR (100 мест · Резерв)", seats=100,
+        min_km=400, opt_low_km=700, opt_high_km=2200, max_km=3050,
+        cask_multiplier=1.03, short_haul_penalty=1.15,
+    ),
+    "tu214": AircraftSpecDTO(
+        id="tu214", name="Ту-214 (210 мест · Волна 2-3)", seats=210,
+        min_km=1100, opt_low_km=1400, opt_high_km=4200, max_km=5200,
+        cask_multiplier=0.86, short_haul_penalty=1.28,
+    ),
+    "mc21_310": AircraftSpecDTO(
+        id="mc21_310", name="МС-21-310 (211 мест · Волна 3 до 2030)", seats=211,
+        min_km=1100, opt_low_km=1400, opt_high_km=4500, max_km=5100,
+        cask_multiplier=0.78, short_haul_penalty=1.25,
+    ),
+}
+
+
+def get_aircraft_spec(aircraft_id: AircraftModelId) -> AircraftSpecDTO:
+    """Неизменяемый DTO выбранного ВС; неизвестный идентификатор — ошибка."""
+    if not isinstance(aircraft_id, str) or aircraft_id not in AIRCRAFT_CATALOG:
+        raise ValueError(f"Неизвестный aircraft_id: {aircraft_id!r}")
+    return AIRCRAFT_CATALOG[aircraft_id]
+
+
+def get_aircraft_gravity_knots(
+    aircraft_id: AircraftModelId,
+) -> tuple[float, float, float, float]:
+    """Четыре границы дальности (км) для гравитационной модели Dev 2."""
+    spec = get_aircraft_spec(aircraft_id)
+    return (float(spec.min_km), float(spec.opt_low_km),
+            float(spec.opt_high_km), float(spec.max_km))
+
+
 ROUND_TRIPS_PER_AIRCRAFT_WEEK = 18.0
 HUB_FLEET_FACTOR = 5.2
 P2P_FLEET_FACTOR = 4.6
