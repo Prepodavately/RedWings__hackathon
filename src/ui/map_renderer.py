@@ -42,6 +42,7 @@ def render_route_network_map(routes_df: pd.DataFrame, scored_cities: List[CitySc
     focus = st.selectbox('🔍 Фокус на маршруте (Сравнение с крюком через Москву)', options,
         format_func=lambda value: names.get(value, value), key='map_focus')
     figure = go.Figure()
+    _boundary_layer(figure, geographic=True)
     for index, row in enumerate(routes_df.itertuples()):
         figure.add_trace(go.Scattergeo(lat=[row.lat_o, row.lat_d], lon=[row.lon_o, row.lon_d],
             mode='lines', line=dict(width=2, color='#6199d4'), opacity=.65,
@@ -79,7 +80,7 @@ def render_route_network_map(routes_df: pd.DataFrame, scored_cities: List[CitySc
             hoverinfo='text', name='Топ-3 скоринга' if top else 'Другие кандидаты'))
     figure.update_geos(lonaxis=dict(range=[26, 82]), lataxis=dict(range=[41, 63]),
         projection_type='mercator', showland=True, landcolor='#e7edf3',
-        showocean=True, oceancolor='#c8ddeb', showcountries=True, countrycolor='#a1b4c4',
+        showocean=True, oceancolor='#c8ddeb', showcountries=False,
         showlakes=True, lakecolor='#c8ddeb', coastlinecolor='#8aa9c1', bgcolor='rgba(0,0,0,0)')
     figure.update_layout(height=580, margin=dict(l=0, r=0, t=10, b=10),
                          legend=dict(orientation='h', y=-.04), dragmode=False)
@@ -174,8 +175,8 @@ def _geo_base():
     figure.update_geos(
         projection_type='mercator', showland=True, landcolor='#edf2f7',
         showocean=True, oceancolor='#d8e8fa', showlakes=True, lakecolor='#d8e8fa',
-        showcountries=True, countrycolor='#94a3b8', showcoastlines=True, coastlinecolor='#64748b',
-        fitbounds='locations',
+        showcountries=False, showcoastlines=True, coastlinecolor='#64748b',
+        fitbounds=False,
     )
     figure.update_layout(height=610, margin=dict(l=0, r=0, t=10, b=20),
                          legend=dict(orientation='h', y=-0.04), dragmode=False)
@@ -317,17 +318,26 @@ def _render_aircraft_range(market, routes, features, cities, spec, params, assum
                         format_func=lambda code: f'{nodes.at[code, "city_name"]} ({code})', key='range_base')
     node = nodes.loc[base]
     figure = _geo_base()
+    ring_lons, ring_lats = [], []
     for radius, color, label in [
         (spec.opt_low_km, '#059669', 'Нижняя граница оптимума'),
         (spec.opt_high_km, '#059669', 'Верхняя граница оптимума'),
         (spec.max_km, '#334155', 'Максимальная дальность'),
     ]:
         lat, lon = _range_ring(node.lat, node.lon, radius)
+        ring_lons.extend(lon)
+        ring_lats.extend(lat)
         figure.add_trace(go.Scattergeo(
             lat=lat, lon=lon, mode='lines',
             line=dict(color=color, width=2, dash='dash'), name=f'{label} · {radius:,} км',
             hoverinfo='name',
         ))
+    # Set the viewport from the chosen aircraft, base and market, excluding boundary traces.
+    figure.update_geos(
+        lonaxis_range=[min(26, min(ring_lons) - 2), max(82, max(ring_lons) + 2)],
+        lataxis_range=[min(40, min(ring_lats) - 2), min(88, max(64, max(ring_lats) + 2))],
+    )
+    _boundary_layer(figure, geographic=True)
     _route_layer(figure, market, 'aircraft_range_status', RANGE_STYLES)
     _city_layer(figure, features, cities)
     figure.add_trace(go.Scattergeo(lat=[node.lat], lon=[node.lon], mode='markers', name=f'База {base}',
@@ -350,18 +360,18 @@ def _render_aircraft_range(market, routes, features, cities, spec, params, assum
     st.caption('Потребность в бортах использует единую норму SJ-100. При отсутствии предложений модель показывает минимальный резерв.')
 
 
-def _boundary_layer(figure):
+def _boundary_layer(figure, *, geographic=False):
+    trace = go.Scattergeo if geographic else go.Scatter
     for name, lines in _gravity_boundaries().items():
         lon, lat = [], []
         for line in lines:
-            for x, y in line:
-                lon.append(x)
-                lat.append(y)
-            lon.append(None)
-            lat.append(None)
-        figure.add_trace(go.Scatter(
-            x=lon, y=lat, mode='lines', line=dict(color='#0f172a', width=1.05 if name == 'countries' else .8),
-            hoverinfo='skip', showlegend=False,
+            xs, ys = zip(*line)
+            lon.extend([*xs, None])
+            lat.extend([*ys, None])
+        coords = {'lon': lon, 'lat': lat} if geographic else {'x': lon, 'y': lat}
+        figure.add_trace(trace(
+            **coords, mode='lines', line=dict(color='#0f172a', width=1.05 if name != 'lakes' else .8),
+            hoverinfo='skip', showlegend=False, name='Границы и береговая линия',
         ))
 
 
@@ -400,7 +410,7 @@ def _render_gravity_lens(features, routes, cities, proposals, summary):
     _field_axes(figure, [field.lons[0], field.lons[-1]], [field.lats[0], field.lats[-1]])
     st.plotly_chart(figure, use_container_width=True, config=MAP_CONFIG, key='gravity_field_map')
     st.caption('Нормированный сценарный индекс от −100 до +100. '
-               'Карта показывает потенциал или относительный дефицит в зависимости от режима. Границы: Natural Earth 1:50m.')
+               'Карта показывает потенциал или относительный дефицит в зависимости от режима. Геометрия: Natural Earth.')
     if controls['exclude_existing_rw']:
         st.caption(f'В витрине {summary.existing_rw_count} существующих пар RW. '
                    'При включённом фильтре поле Dev 2 строит потенциал только по направлениям с нулём рейсов RW и конкурентов.')
@@ -427,4 +437,5 @@ def render_network_lenses(features: pd.DataFrame, routes: pd.DataFrame,
         _render_aircraft_range(market, routes, features, cities, spec, params, assumptions)
     else:
         _render_gravity_lens(features, routes, cities, proposals, summary)
+    st.caption('Контур РФ показан по официальной позиции России. Геометрия: Natural Earth.')
     return aircraft_id, proposals['pair_key'].tolist()
